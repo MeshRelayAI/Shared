@@ -1,0 +1,308 @@
+namespace Mesh.Shared;
+
+/// <summary>
+/// Register (or re-assert) a handle together with a device public key.
+/// <para>
+/// Collision avoidance: <see cref="Signature"/> is a proof of possession over
+/// <c>ClaimProtocol.Message(handle, devicePublicKey)</c>, produced with the device PRIVATE key.
+/// The relay rejects any registration whose signature does not verify against the presented
+/// device public key, so a handle can only ever be claimed or re-asserted by someone who
+/// actually controls the key. Taking over an already-claimed handle with a different key still
+/// requires device linking or recovery (proof of the handle's recovery key).
+/// </para>
+/// </summary>
+public record RegisterHandleRequest(
+    string Handle,
+    string DevicePublicKey,
+    string? DisplayName,
+    string? RecoveryPublicKey = null,
+    string? Signature = null);
+
+/// <summary>Canonical string a registrant signs with its device key to prove key possession.</summary>
+public static class ClaimProtocol
+{
+    public static string Message(string handle, string devicePublicKey)
+        => $"handle-claim|{LinkProtocol.Normalize(handle)}|{devicePublicKey}";
+}
+
+public record RegisterHandleResponse(
+    string Handle,
+    string DeviceId,
+    DateTimeOffset RegisteredAt);
+
+/// <summary>
+/// Recover a handle onto a brand-new device when no existing device is available to issue a
+/// link invite. The new device presents its own fresh public key, signed by the handle's
+/// recovery private key (which travels only inside the user's passphrase-encrypted export).
+/// The relay verifies the signature against the recovery public key stored at registration and,
+/// on success, authorizes the new device key under the handle.
+/// Signature is over <c>handle-recover|handle|newPublicKey</c> by the recovery key.
+/// </summary>
+public record RecoverHandleRequest(
+    string Handle,
+    string NewPublicKey,
+    string RecoverySignature);
+
+/// <summary>Canonical strings for handle recovery.</summary>
+public static class RecoveryProtocol
+{
+    public static string Message(string handle, string newPublicKey)
+        => $"handle-recover|{LinkProtocol.Normalize(handle)}|{newPublicKey}";
+}
+
+/// <summary>
+/// Delete (release) a handle so its name becomes free to claim again. Authenticated: the caller
+/// signs with a device key currently registered under the handle, proving ownership. The relay
+/// verifies the key is registered and the signature is valid, then removes the handle registration
+/// (and its pending invites and offline inbox). This is what makes handle names truly reusable and
+/// prevents stale registrations from blocking a legitimate re-creation.
+/// Signature is over <c>handle-delete|handle</c> by a registered device key.
+/// </summary>
+public record DeleteHandleRequest(
+    string Handle,
+    string DevicePublicKey,
+    string Signature);
+
+/// <summary>Canonical string a device signs to delete (release) its handle.</summary>
+public static class DeleteProtocol
+{
+    public static string Message(string handle)
+        => $"handle-delete|{LinkProtocol.Normalize(handle)}";
+}
+
+/// <summary>
+/// Device-linking: an already-authorized device creates a short-lived, single-use
+/// invite so another device can join the same handle. The relay only stores the
+/// hash of the code; the raw code travels out-of-band (QR) to the new device.
+/// Signature is over <c>link-invite|handle|codeHash|expiresAtUnix</c> by the creator key.
+/// </summary>
+public record LinkInviteRequest(
+    string Handle,
+    string CreatorPublicKey,
+    string CodeHash,
+    long ExpiresAtUnix,
+    string Signature);
+
+public record LinkInviteResponse(string Handle, long ExpiresAtUnix);
+
+/// <summary>
+/// Device-linking redemption by the new device. Presents the raw invite code plus
+/// its own new public key, signed to prove key possession.
+/// Signature is over <c>link-redeem|handle|code</c> by <see cref="NewPublicKey"/>.
+/// </summary>
+public record LinkRedeemRequest(
+    string Handle,
+    string NewPublicKey,
+    string Code,
+    string Signature);
+
+public record LinkRedeemResponse(string Handle, string DeviceId, string? DisplayName);
+
+/// <summary>Canonical strings + hashing used by both client and relay for device-linking.</summary>
+public static class LinkProtocol
+{
+    public static string InviteMessage(string handle, string codeHash, long expiresAtUnix)
+        => $"link-invite|{Normalize(handle)}|{codeHash}|{expiresAtUnix}";
+
+    public static string RedeemMessage(string handle, string code)
+        => $"link-redeem|{Normalize(handle)}|{code}";
+
+    public static string HashCode(string code)
+        => Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(code)));
+
+    public static string Normalize(string handle)
+        => handle.Trim().TrimStart('@').ToLowerInvariant();
+}
+
+/// <summary>
+/// Brokered token exchange: for confidential connectors (Google, Notion, Slack, …) the client
+/// forwards an OAuth grant to the relay, which holds the client secret and performs the exchange.
+/// Supports both the initial <c>authorization_code</c> exchange and hourly <c>refresh_token</c>
+/// refresh. The client authenticates with a device key registered under its handle, so only real
+/// Mesh users can use the shared OAuth apps.
+/// Signature is over <c>connector-token|provider|handle|grantType|secretHash|redirectUri</c> by the
+/// device key, where <c>secretHash</c> hashes the code (auth code grant) or the refresh token.
+/// </summary>
+public record ConnectorTokenRequest(
+    string Provider,
+    string Handle,
+    string DevicePublicKey,
+    string GrantType,
+    string? Code,
+    string? RedirectUri,
+    string? CodeVerifier,
+    string? RefreshToken,
+    string Signature);
+
+/// <summary>The provider's raw token response, passed back verbatim as JSON.</summary>
+public record ConnectorTokenResponse(string TokenJson);
+
+/// <summary>
+/// Public OAuth metadata for a built-in connector, served by the relay's <c>GET /connectors</c>
+/// endpoint and consumed by the client to build authorize requests. This is a data shape only:
+/// it carries public identifiers (authorize/token URLs and the OAuth <b>client id</b>, which is
+/// public and appears in every authorize URL). Client <b>secrets</b> are never part of this type,
+/// for confidential providers the relay injects the secret server-side during the token exchange.
+/// The concrete values (which client ids to use) live in the relay's configuration, not in the
+/// open shared library, so the shared code carries no app-specific credentials.
+/// </summary>
+public sealed record ConnectorEndpoint(
+    string Key,
+    string AuthorizeUrl,
+    string TokenUrl,
+    string ClientId,
+    bool UseBasicAuth,
+    bool Confidential);
+
+/// <summary>Canonical strings used by both client and relay for the connector token broker.</summary>
+public static class ConnectorProtocol
+{
+    public const string GrantAuthCode = "authorization_code";
+    public const string GrantRefresh = "refresh_token";
+
+    /// <summary>The value bound into the signature: the code (auth code grant) or refresh token.</summary>
+    public static string SecretMaterial(string grantType, string? code, string? refreshToken)
+        => grantType == GrantRefresh ? (refreshToken ?? "") : (code ?? "");
+
+    public static string TokenMessage(string provider, string handle, string grantType, string secretHash, string? redirectUri)
+        => $"connector-token|{provider.ToLowerInvariant()}|{LinkProtocol.Normalize(handle)}|{grantType}|{secretHash}|{redirectUri ?? ""}";
+}
+
+/// <summary>Public directory view of a handle (no private data).</summary>
+public record HandleInfo(
+    string Handle,
+    string? DisplayName,
+    IReadOnlyList<string> DevicePublicKeys,
+    bool Online,
+    DateTimeOffset RegisteredAt);
+
+/// <summary>
+/// A request to the relay-hosted free model. The relay holds the upstream model key
+/// server-side and proxies the completion, rate limited per handle, so first-launch users
+/// get a working model with no key of their own. The caller proves it owns a device key
+/// registered under its handle (same device-key auth as the connector broker).
+/// Signature is over <c>hosted-model|handle|promptHash</c> by the device key.
+/// </summary>
+public record HostedModelRequest(
+    string Handle,
+    string DevicePublicKey,
+    string Signature,
+    string SystemPrompt,
+    IReadOnlyList<HostedModelMessage> Messages,
+    string? ToolsJson = null);
+
+/// <summary>
+/// A single message in a hosted-model conversation. <see cref="ToolCallsJson"/> carries an
+/// assistant turn's raw OpenAI tool_calls array; a message with <see cref="ToolCallId"/> and
+/// Role "tool" carries a tool result. Both are null for ordinary user/assistant text.
+/// </summary>
+public record HostedModelMessage(string Role, string Content, string? ToolCallsJson = null, string? ToolCallId = null);
+
+/// <summary>
+/// The hosted model reply. <see cref="Content"/> is the assistant text; when the model wants to
+/// call tools, <see cref="ToolCallsJson"/> holds the raw OpenAI tool_calls array so the CLIENT
+/// can execute the tools locally (the relay never runs them) and continue the conversation.
+/// Token usage (as reported by the upstream model) is echoed back so the client can show a live
+/// token counter and so free-tier metering is done in tokens, the primary cost currency.
+/// </summary>
+public record HostedModelResponse(
+    string Content,
+    string? ToolCallsJson = null,
+    int PromptTokens = 0,
+    int CompletionTokens = 0,
+    int TotalTokens = 0);
+
+/// <summary>Canonical strings for the hosted-model proxy signature.</summary>
+public static class HostedModelProtocol
+{
+    public static string Message(string handle, string promptHash)
+        => $"hosted-model|{LinkProtocol.Normalize(handle)}|{promptHash}";
+
+    public static string PromptHash(string systemPrompt, IEnumerable<HostedModelMessage> messages)
+    {
+        var joined = systemPrompt + "\n" + string.Join("\n", messages.Select(m => m.Role + ":" + m.Content));
+        return Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(joined)));
+    }
+}
+
+/// <summary>
+/// An end-to-end message routed by the relay between two handles.
+/// The relay treats <see cref="Body"/> as opaque and never inspects it.
+/// </summary>
+public record MeshEnvelope(
+    string Id,
+    string From,
+    string To,
+    string Kind,
+    string Body,
+    string? Signature,
+    DateTimeOffset SentAt)
+{
+    public static MeshEnvelope Create(string from, string to, string kind, string body, string? signature = null)
+        => new(Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow);
+}
+
+/// <summary>Well-known envelope kinds for the prototype.</summary>
+public static class MeshKinds
+{
+    public const string Chat = "chat";
+    public const string AgentRequest = "agent.request";
+    public const string AgentResponse = "agent.response";
+    public const string System = "system";
+
+    /// <summary>
+    /// A person-to-person message addressed to the human, not their agent. The
+    /// receiving client records it but does NOT auto-engage the guest agent.
+    /// </summary>
+    public const string DirectMessage = "direct";
+
+    /// <summary>
+    /// A delivery receipt: the recipient's client acknowledges it received a specific message.
+    /// The body carries the acknowledged message id (see <see cref="ReceiptProtocol"/>).
+    /// </summary>
+    public const string Receipt = "receipt";
+
+    /// <summary>
+    /// A request from one of the owner's OWN devices to another (e.g. phone to home desktop) asking
+    /// the remote device's agent to answer with its full local toolset. Only honored between devices
+    /// sharing the same handle when the target has opted in (ActAsRemoteAgent).
+    /// </summary>
+    public const string RemoteAgentRequest = "remote.request";
+
+    /// <summary>The remote device's answer to a <see cref="RemoteAgentRequest"/>.</summary>
+    public const string RemoteAgentResponse = "remote.response";
+}
+
+/// <summary>Canonical body format for a delivery receipt: just the acknowledged message id.</summary>
+public static class ReceiptProtocol
+{
+    public static string Body(string messageId) => "receipt:" + messageId;
+    public static string? MessageId(string body)
+        => body is not null && body.StartsWith("receipt:", StringComparison.Ordinal) ? body["receipt:".Length..] : null;
+}
+
+/// <summary>
+/// Names shared by the SignalR hub and the client so both agree on the transport contract.
+/// The hub is used purely for the connection/transport; cross-node routing is done by the
+/// relay's directed backplane (presence lookup plus per-node forward), not a fan-out backplane.
+///
+/// Auth is a nonce challenge/response over the connection (replay resistant): the server
+/// issues a fresh nonce, the client signs it with its device private key, and the server
+/// verifies against the device public keys registered under the handle.
+/// </summary>
+public static class MeshHubProtocol
+{
+    /// <summary>Relative path the hub is mapped at on the relay.</summary>
+    public const string Route = "/hub/mesh";
+
+    // Client -> server invocations.
+    public const string Authenticate = "Authenticate";
+    public const string SendEnvelope = "SendEnvelope";
+
+    // Server -> client events.
+    public const string Challenge = "Challenge"; // payload: nonce (string)
+    public const string Ready = "Ready";         // payload: none (auth accepted)
+    public const string Receive = "Receive";     // payload: envelope JSON (string)
+}

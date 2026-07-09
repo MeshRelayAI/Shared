@@ -273,6 +273,119 @@ public static class MeshKinds
 
     /// <summary>The remote device's answer to a <see cref="RemoteAgentRequest"/>.</summary>
     public const string RemoteAgentResponse = "remote.response";
+
+    /// <summary>
+    /// A request to invoke a provider's PUBLIC service (a published capability bundle) by service id.
+    /// Unlike <see cref="AgentRequest"/> it does not require an allow-listed contact relationship: any
+    /// handle may invoke a public-listed service. The provider's client answers with a sandboxed
+    /// service-scoped agent (published KB/Skills/Widgets only, never private connectors or local tools).
+    /// The body is <see cref="ServiceProtocol"/>-framed (serviceId + prompt). The relay records the
+    /// invocation as an attested usage event for reputation (it sees that it routed it, not the content).
+    /// </summary>
+    public const string ServiceRequest = "service.request";
+
+    /// <summary>The provider's answer to a <see cref="ServiceRequest"/>.</summary>
+    public const string ServiceResponse = "service.response";
+}
+
+/// <summary>
+/// Frames the body of a <see cref="MeshKinds.ServiceRequest"/> / ServiceResponse so the recipient
+/// can route it to the right published service. Format: <c>serviceId\nprompt</c> (first line is the
+/// service id, remainder is the prompt/answer). Kept plain-text simple; the whole body is still
+/// end-to-end encrypted on the wire exactly like any other envelope body.
+/// </summary>
+public static class ServiceProtocol
+{
+    public static string Body(string serviceId, string text) => serviceId + "\n" + text;
+
+    public static (string serviceId, string text) Parse(string body)
+    {
+        var nl = body.IndexOf('\n');
+        return nl < 0 ? (body, "") : (body[..nl], body[(nl + 1)..]);
+    }
+}
+
+/// <summary>
+/// A public directory listing for a published service, served by the relay's capability directory
+/// (<c>GET /capabilities</c>). Carries only public data: no private KB content, just the metadata a
+/// consumer needs to discover and judge a service. Reputation fields are relay-computed.
+/// </summary>
+public sealed record ServiceListing(
+    string ServiceId,
+    string Handle,
+    string Name,
+    string Description,
+    string Category,
+    int Upvotes,
+    int Downvotes,
+    int UniqueUsers,
+    double Score,
+    bool Verified,
+    DateTimeOffset PublishedAt);
+
+/// <summary>
+/// Publish (or update) a service in the relay directory. Authenticated with a device key registered
+/// under the handle (same device-key auth as the connector broker / hosted model). The relay stores
+/// only this public metadata; the actual capabilities run on the provider's client on invocation.
+/// Signature is over <see cref="ServiceDirectoryProtocol.PublishMessage"/> by the device key.
+/// </summary>
+public record PublishServiceRequest(
+    string Handle,
+    string DevicePublicKey,
+    string ServiceId,
+    string Name,
+    string Description,
+    string Category,
+    string Signature);
+
+/// <summary>Unpublish a service. Signature is over <c>service-unpublish|handle|serviceId</c>.</summary>
+public record UnpublishServiceRequest(
+    string Handle,
+    string DevicePublicKey,
+    string ServiceId,
+    string Signature);
+
+/// <summary>
+/// Cast (or change/clear) a usage-gated up/down vote on a service. The relay only accepts the vote
+/// when it has observed the voter's handle actually invoke the service (attested usage), and stores
+/// one updatable vote per voter per service. Vote is +1 (up), -1 (down), or 0 (clear).
+/// Signature is over <c>service-vote|voterHandle|serviceId|vote</c> by the voter's device key.
+/// </summary>
+public record ServiceVoteRequest(
+    string VoterHandle,
+    string DevicePublicKey,
+    string ServiceId,
+    int Vote,
+    string Signature);
+
+/// <summary>Canonical strings for the capability directory endpoints.</summary>
+public static class ServiceDirectoryProtocol
+{
+    public static string PublishMessage(string handle, string serviceId, string name)
+        => $"service-publish|{LinkProtocol.Normalize(handle)}|{serviceId}|{name}";
+
+    public static string UnpublishMessage(string handle, string serviceId)
+        => $"service-unpublish|{LinkProtocol.Normalize(handle)}|{serviceId}";
+
+    public static string VoteMessage(string voterHandle, string serviceId, int vote)
+        => $"service-vote|{LinkProtocol.Normalize(voterHandle)}|{serviceId}|{vote}";
+
+    /// <summary>
+    /// Wilson score lower bound of the positive proportion at 95% confidence: the ranking signal for
+    /// the directory. Balances up/down proportion against sample size so a 1/1 does not outrank 90/100,
+    /// and low-vote items are ranked conservatively (cold-start safe). Returns 0 when there are no votes.
+    /// </summary>
+    public static double WilsonScore(int up, int down)
+    {
+        var n = up + down;
+        if (n == 0) return 0.0;
+        const double z = 1.96;
+        var phat = (double)up / n;
+        var denom = 1 + z * z / n;
+        var centre = phat + z * z / (2 * n);
+        var margin = z * Math.Sqrt((phat * (1 - phat) + z * z / (4 * n)) / n);
+        return (centre - margin) / denom;
+    }
 }
 
 /// <summary>Canonical body format for a delivery receipt: just the acknowledged message id.</summary>

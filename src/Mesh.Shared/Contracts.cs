@@ -16,7 +16,8 @@ public record RegisterHandleRequest(
     string DevicePublicKey,
     string? DisplayName,
     string? RecoveryPublicKey = null,
-    string? Signature = null);
+    string? Signature = null,
+    string? DeviceName = null);
 
 /// <summary>Canonical string a registrant signs with its device key to prove key possession.</summary>
 public static class ClaimProtocol
@@ -178,6 +179,25 @@ public record HandleInfo(
     DateTimeOffset RegisteredAt);
 
 /// <summary>
+/// Public view of a single device under a handle: its stable device id, a friendly name (if the
+/// device set one), and whether it is currently connected. Served by GET /handles/{handle}/devices
+/// so a client can offer a "home device" picker and route remote-agent requests to one device.
+/// </summary>
+public record DeviceInfo(string DeviceId, string? Name, bool Online);
+
+/// <summary>
+/// Canonical, stable derivation of a short device id from a device public key. Shared by the relay
+/// and the client so both compute the SAME id for a given key. This is what lets an envelope target
+/// one specific device of a handle (MeshEnvelope.ToDevice) rather than every device.
+/// </summary>
+public static class DeviceProtocol
+{
+    public static string DeviceId(string devicePublicKey)
+        => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(devicePublicKey)))[..12].ToLowerInvariant();
+}
+
+/// <summary>
 /// A request to the relay-hosted free model. The relay holds the upstream model key
 /// server-side and proxies the completion, rate limited per handle, so first-launch users
 /// get a working model with no key of their own. The caller proves it owns a device key
@@ -238,10 +258,13 @@ public record MeshEnvelope(
     string Kind,
     string Body,
     string? Signature,
-    DateTimeOffset SentAt)
+    DateTimeOffset SentAt,
+    string? FromDevice = null,
+    string? ToDevice = null)
 {
-    public static MeshEnvelope Create(string from, string to, string kind, string body, string? signature = null)
-        => new(Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow);
+    public static MeshEnvelope Create(string from, string to, string kind, string body, string? signature = null,
+        string? fromDevice = null, string? toDevice = null)
+        => new(Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow, fromDevice, toDevice);
 }
 
 /// <summary>Well-known envelope kinds for the prototype.</summary>

@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Mesh.Shared;
 
 /// <summary>
@@ -312,10 +314,18 @@ public static class MeshKinds
 }
 
 /// <summary>
+/// One turn of a service conversation carried inside a <see cref="MeshKinds.ServiceRequest"/> so the
+/// provider's sandboxed agent has multi-turn context for follow-ups. Role is "user" (the consumer) or
+/// "assistant" (a prior service answer), from the provider agent's point of view. The provider stays
+/// stateless per caller: the consumer supplies the (windowed) transcript on every request.
+/// </summary>
+public readonly record struct ServiceTurn(string Role, string Text);
+
+/// <summary>
 /// Frames the body of a <see cref="MeshKinds.ServiceRequest"/> / ServiceResponse so the recipient
-/// can route it to the right published service. Format: <c>serviceId\nprompt</c> (first line is the
-/// service id, remainder is the prompt/answer). Kept plain-text simple; the whole body is still
-/// end-to-end encrypted on the wire exactly like any other envelope body.
+/// can route it to the right published service. A response (and a legacy request) is
+/// <c>serviceId\ntext</c>; a modern request is <c>serviceId\n{json transcript}</c>. The whole body is
+/// still end-to-end encrypted on the wire exactly like any other envelope body.
 /// </summary>
 public static class ServiceProtocol
 {
@@ -325,6 +335,33 @@ public static class ServiceProtocol
     {
         var nl = body.IndexOf('\n');
         return nl < 0 ? (body, "") : (body[..nl], body[(nl + 1)..]);
+    }
+
+    /// <summary>
+    /// Frames a ServiceRequest that carries the recent transcript: <c>serviceId\n{json array of
+    /// ServiceTurn}</c>. The provider feeds this to its sandboxed agent so follow-up turns have
+    /// context, while the provider itself keeps no per-caller state.
+    /// </summary>
+    public static string RequestBody(string serviceId, IEnumerable<ServiceTurn> history)
+        => serviceId + "\n" + JsonSerializer.Serialize(history);
+
+    /// <summary>
+    /// Parses a ServiceRequest body into its serviceId and transcript. Backward compatible: a legacy
+    /// plain-text body (<c>serviceId\nprompt</c>) is read as a single user turn.
+    /// </summary>
+    public static (string serviceId, IReadOnlyList<ServiceTurn> history) ParseRequest(string body)
+    {
+        var (id, rest) = Parse(body);
+        if (!string.IsNullOrWhiteSpace(rest) && rest.TrimStart().StartsWith("["))
+        {
+            try
+            {
+                var turns = JsonSerializer.Deserialize<List<ServiceTurn>>(rest);
+                if (turns is not null) return (id, turns);
+            }
+            catch { /* not JSON: fall through to plain-text */ }
+        }
+        return (id, new List<ServiceTurn> { new("user", rest) });
     }
 }
 

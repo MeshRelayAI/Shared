@@ -119,6 +119,94 @@ public static class LinkProtocol
 }
 
 /// <summary>
+/// Custom-scheme deep links (mesh://) that route the app to a service or a handle. Services are public,
+/// so unlike the pairing link these carry no crypto, just a navigation target. Builders and a tolerant
+/// parser live here so the client (share buttons + router) and any tooling agree on the format.
+/// </summary>
+public static class DeepLink
+{
+    public const string Scheme = "mesh";
+
+    /// <summary>mesh://service?handle=&id=&name= (name optional, for display before the thread loads).</summary>
+    public static string Service(string handle, string serviceId, string? name = null)
+    {
+        var q = $"handle={Uri.EscapeDataString(LinkProtocol.Normalize(handle))}&id={Uri.EscapeDataString(serviceId)}";
+        if (!string.IsNullOrWhiteSpace(name)) q += $"&name={Uri.EscapeDataString(name)}";
+        return $"mesh://service?{q}";
+    }
+
+    /// <summary>mesh://user?handle= (open/add a contact and start a conversation).</summary>
+    public static string User(string handle)
+        => $"mesh://user?handle={Uri.EscapeDataString(LinkProtocol.Normalize(handle))}";
+
+    public enum Kind { None, Service, User, Pairing }
+
+    /// <summary>Parsed deep link. Fields are populated per <see cref="Kind"/>; Raw always echoes the input.</summary>
+    public readonly record struct Parsed(Kind Kind, string? Handle, string? ServiceId, string? ServiceName, string? Raw);
+
+    /// <summary>
+    /// Tolerantly parses a mesh:// URI into a routing target. Returns Kind.None for anything that is not
+    /// a recognized mesh link. Recognizes service, user, and the existing link (pairing) hosts.
+    /// </summary>
+    public static Parsed TryParse(string? uri)
+    {
+        if (string.IsNullOrWhiteSpace(uri)) return new Parsed(Kind.None, null, null, null, uri);
+        if (!Uri.TryCreate(uri.Trim(), UriKind.Absolute, out var u)
+            || !string.Equals(u.Scheme, Scheme, StringComparison.OrdinalIgnoreCase))
+            return new Parsed(Kind.None, null, null, null, uri);
+
+        var host = u.Host.ToLowerInvariant();
+        var q = ParseQuery(u.Query);
+        switch (host)
+        {
+            case "service":
+                return new Parsed(Kind.Service, LinkProtocol.Normalize(Get(q, "handle")), Get(q, "id"), Get(q, "name"), uri);
+            case "user":
+                return new Parsed(Kind.User, LinkProtocol.Normalize(Get(q, "handle")), null, null, uri);
+            case "link":
+                return new Parsed(Kind.Pairing, LinkProtocol.Normalize(Get(q, "handle")), null, null, uri);
+            default:
+                return new Parsed(Kind.None, null, null, null, uri);
+        }
+    }
+
+    private static string Get(Dictionary<string, string> q, string key)
+        => q.TryGetValue(key, out var v) ? v : "";
+
+    private static Dictionary<string, string> ParseQuery(string query)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(query)) return result;
+        foreach (var pair in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq < 0) { result[Uri.UnescapeDataString(pair)] = ""; continue; }
+            var key = Uri.UnescapeDataString(pair[..eq]);
+            var val = Uri.UnescapeDataString(pair[(eq + 1)..]);
+            result[key] = val;
+        }
+        return result;
+    }
+}
+
+/// <summary>
+/// Public https universal links served by the relay landing pages (meshrelay.net). These are the
+/// shareable links (work for people without the app: the page bounces to the mesh:// deep link, else
+/// offers install). Client share buttons emit these; the relay serves /s/{handle}/{serviceId} and
+/// /u/{handle}. Kept here so the URL format stays in sync on both sides.
+/// </summary>
+public static class UniversalLink
+{
+    public const string BaseUrl = "https://meshrelay.net";
+
+    public static string ForService(string handle, string serviceId)
+        => $"{BaseUrl}/s/{Uri.EscapeDataString(LinkProtocol.Normalize(handle))}/{Uri.EscapeDataString(serviceId)}";
+
+    public static string ForHandle(string handle)
+        => $"{BaseUrl}/u/{Uri.EscapeDataString(LinkProtocol.Normalize(handle))}";
+}
+
+/// <summary>
 /// Brokered token exchange: for confidential connectors (Google, Notion, Slack, …) the client
 /// forwards an OAuth grant to the relay, which holds the client secret and performs the exchange.
 /// Supports both the initial <c>authorization_code</c> exchange and hourly <c>refresh_token</c>

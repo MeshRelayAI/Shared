@@ -399,7 +399,70 @@ public static class MeshKinds
 
     /// <summary>The provider's answer to a <see cref="ServiceRequest"/>.</summary>
     public const string ServiceResponse = "service.response";
+
+    /// <summary>
+    /// A user-submitted report of inappropriate AI-generated content, sent as an ordinary end-to-end
+    /// encrypted message to the reserved <see cref="ReservedHandles.Report"/> handle for operator
+    /// review (Microsoft Store Policy 11.16). The body is <see cref="ReportProtocol"/>-framed.
+    /// </summary>
+    public const string Report = "report";
 }
+
+/// <summary>
+/// System handles the relay reserves so no ordinary user can register (hijack) them. The report sink
+/// <see cref="Report"/> receives user reports of AI content and its queued messages never expire.
+/// </summary>
+public static class ReservedHandles
+{
+    /// <summary>The report sink: users send AI-content reports here for operator review.</summary>
+    public const string Report = "meshreport";
+
+    /// <summary>All reserved system handles (normalized, lowercase).</summary>
+    public static readonly IReadOnlyList<string> All = new[] { Report };
+
+    /// <summary>True when the handle is a reserved system handle (case-insensitive, @ and case tolerant).</summary>
+    public static bool IsReserved(string? handle)
+    {
+        if (string.IsNullOrWhiteSpace(handle)) return false;
+        var h = LinkProtocol.Normalize(handle);
+        foreach (var r in All) if (h == r) return true;
+        return false;
+    }
+}
+
+/// <summary>
+/// Frames the body of a <see cref="MeshKinds.Report"/> message: a JSON <see cref="ReportPayload"/>.
+/// The whole body is end-to-end encrypted to the reserved report handle exactly like any message.
+/// </summary>
+public static class ReportProtocol
+{
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    public static string Body(ReportPayload payload) => JsonSerializer.Serialize(payload, Json);
+
+    public static ReportPayload? Parse(string body)
+    {
+        try { return JsonSerializer.Deserialize<ReportPayload>(body, Json); }
+        catch { return null; }
+    }
+}
+
+/// <summary>
+/// A report of inappropriate AI-generated content. Carries the metadata and the exact transcript the
+/// reporting user reviewed and explicitly agreed to share, so the operator can review the AI output.
+/// </summary>
+public sealed record ReportPayload(
+    string Target,
+    string Category,
+    string? Note,
+    string? Model,
+    string? ServiceId,
+    string AppVersion,
+    DateTimeOffset At,
+    IReadOnlyList<ReportLine> Transcript);
+
+/// <summary>One transcript line included in a report: who authored it and the exact text.</summary>
+public readonly record struct ReportLine(string Author, string Text);
 
 /// <summary>
 /// One turn of a service conversation carried inside a <see cref="MeshKinds.ServiceRequest"/> so the

@@ -329,6 +329,46 @@ public static class ServiceProtocol
 }
 
 /// <summary>
+/// The fixed set of service categories shown in the Community directory. Kept as a small, stable,
+/// single-select taxonomy so browse/filter never fragments across free-text variants. Defined once
+/// here so the relay (coercion on publish) and the client (publish dropdown + filter) always agree.
+/// </summary>
+public static class ServiceCategories
+{
+    /// <summary>Canonical categories in display order. "Other" is the catch-all.</summary>
+    public static readonly IReadOnlyList<string> All = new[]
+    {
+        "Productivity", "Writing", "Development", "Analytics", "Business", "Marketing",
+        "Research", "Education", "Design", "Lifestyle", "News", "Other"
+    };
+
+    /// <summary>The catch-all category assigned to empty or unrecognized values.</summary>
+    public const string Fallback = "Other";
+
+    /// <summary>True when <paramref name="category"/> is one of the canonical categories (case-insensitive).</summary>
+    public static bool IsValid(string? category)
+    {
+        if (string.IsNullOrWhiteSpace(category)) return false;
+        foreach (var c in All)
+            if (string.Equals(c, category, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Normalizes any input to a canonical category: matches case-insensitively and returns the
+    /// canonical casing, or <see cref="Fallback"/> ("Other") for empty/unknown values. Keeps the
+    /// directory clean even when older clients or hand-crafted requests send arbitrary category text.
+    /// </summary>
+    public static string Coerce(string? category)
+    {
+        if (!string.IsNullOrWhiteSpace(category))
+            foreach (var c in All)
+                if (string.Equals(c, category, StringComparison.OrdinalIgnoreCase)) return c;
+        return Fallback;
+    }
+}
+
+/// <summary>
 /// A public directory listing for a published service, served by the relay's capability directory
 /// (<c>GET /capabilities</c>). Carries only public data: no private KB content, just the metadata a
 /// consumer needs to discover and judge a service. Reputation fields are relay-computed.

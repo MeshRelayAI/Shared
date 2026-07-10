@@ -376,7 +376,8 @@ public static class ServiceCategories
     public static readonly IReadOnlyList<string> All = new[]
     {
         "Productivity", "Writing", "Development", "Analytics", "Business", "Marketing",
-        "Research", "Education", "Design", "Lifestyle", "News", "Other"
+        "Research", "Education", "Design", "Lifestyle", "News", "Entertainment",
+        "Professional Services", "Other"
     };
 
     /// <summary>The catch-all category assigned to empty or unrecognized values.</summary>

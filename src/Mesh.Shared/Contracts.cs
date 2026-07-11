@@ -300,7 +300,8 @@ public record HostedModelRequest(
     string Signature,
     string SystemPrompt,
     IReadOnlyList<HostedModelMessage> Messages,
-    string? ToolsJson = null);
+    string? ToolsJson = null,
+    int MaxTokens = 0);
 
 /// <summary>
 /// A single message in a hosted-model conversation. <see cref="ToolCallsJson"/> carries an
@@ -315,13 +316,16 @@ public record HostedModelMessage(string Role, string Content, string? ToolCallsJ
 /// can execute the tools locally (the relay never runs them) and continue the conversation.
 /// Token usage (as reported by the upstream model) is echoed back so the client can show a live
 /// token counter and so free-tier metering is done in tokens, the primary cost currency.
+/// <see cref="FinishReason"/> echoes the upstream stop reason (e.g. "length" when the output-token
+/// limit truncated the reply) so the client can reject a truncated answer instead of rendering it.
 /// </summary>
 public record HostedModelResponse(
     string Content,
     string? ToolCallsJson = null,
     int PromptTokens = 0,
     int CompletionTokens = 0,
-    int TotalTokens = 0);
+    int TotalTokens = 0,
+    string? FinishReason = null);
 
 /// <summary>Canonical strings for the hosted-model proxy signature.</summary>
 public static class HostedModelProtocol

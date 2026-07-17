@@ -361,6 +361,68 @@ public record MeshEnvelope(
         => new(Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow, fromDevice, toDevice);
 }
 
+/// <summary>
+/// One opaque ciphertext routed to several handles. The relay receives no group identifier or
+/// membership metadata beyond the transient recipient list required for delivery.
+/// </summary>
+public sealed record MeshFanoutRequest(
+    string Id,
+    IReadOnlyList<string> Recipients,
+    string Body,
+    string? Signature,
+    DateTimeOffset SentAt);
+
+/// <summary>
+/// Dispatch metadata carried inside an encrypted fan-out body. The relay sees only ciphertext.
+/// </summary>
+public sealed record MeshFanoutContent(string Kind, string Payload);
+
+/// <summary>Explicit hub acknowledgement for a logical direct or fan-out send.</summary>
+public sealed record MeshSendResult(
+    bool Accepted,
+    string Code,
+    int RetryAfterMs = 0,
+    int RecipientCount = 0)
+{
+    public static MeshSendResult Ok(int recipientCount = 1) => new(true, "accepted", 0, recipientCount);
+    public static MeshSendResult Reject(string code, int retryAfterMs = 0)
+        => new(false, code, Math.Max(0, retryAfterMs), 0);
+}
+
+/// <summary>Batch request for public device encryption keys.</summary>
+public sealed record HandleKeysBatchRequest(IReadOnlyList<string> Handles);
+
+/// <summary>Public device keys registered under one normalized handle.</summary>
+public sealed record HandleKeysBatchEntry(string Handle, IReadOnlyList<string> DevicePublicKeys);
+
+/// <summary>Batch directory response. Missing handles are omitted.</summary>
+public sealed record HandleKeysBatchResponse(IReadOnlyList<HandleKeysBatchEntry> Handles);
+
+/// <summary>Hard transport bounds for stateless relay fan-out.</summary>
+public static class FanoutProtocol
+{
+    public const int MaxRecipients = 128;
+}
+
+/// <summary>
+/// Complete client-side group metadata carried only inside an end-to-end encrypted envelope body.
+/// </summary>
+public sealed record GroupSnapshotPayload(
+    string GroupId,
+    string Name,
+    string OwnerHandle,
+    IReadOnlyList<string> MemberHandles,
+    int Version);
+
+/// <summary>A group chat message carried only inside an end-to-end encrypted envelope body.</summary>
+public sealed record GroupMessagePayload(
+    string GroupId,
+    string MessageId,
+    string SenderHandle,
+    string Text,
+    int MembershipVersion,
+    DateTimeOffset SentAt);
+
 /// <summary>Well-known envelope kinds for the prototype.</summary>
 public static class MeshKinds
 {
@@ -368,6 +430,9 @@ public static class MeshKinds
     public const string AgentRequest = "agent.request";
     public const string AgentResponse = "agent.response";
     public const string System = "system";
+    public const string Fanout = "fanout";
+    public const string GroupControl = "group.control";
+    public const string GroupMessage = "group.message";
 
     /// <summary>
     /// A person-to-person message addressed to the human, not their agent. The
@@ -669,6 +734,7 @@ public static class MeshHubProtocol
     // Client -> server invocations.
     public const string Authenticate = "Authenticate";
     public const string SendEnvelope = "SendEnvelope";
+    public const string SendFanout = "SendFanout";
 
     // Server -> client events.
     public const string Challenge = "Challenge"; // payload: nonce (string)

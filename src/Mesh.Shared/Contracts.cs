@@ -19,7 +19,9 @@ public record RegisterHandleRequest(
     string? DisplayName,
     string? RecoveryPublicKey = null,
     string? Signature = null,
-    string? DeviceName = null);
+    string? DeviceName = null,
+    string? DevicePlatform = null,
+    bool RemoteAgentEnabled = false);
 
 /// <summary>Canonical string a registrant signs with its device key to prove key possession.</summary>
 public static class ClaimProtocol
@@ -327,7 +329,33 @@ public record HandleInfo(
 /// device set one), and whether it is currently connected. Served by GET /handles/{handle}/devices
 /// so a client can offer a "home device" picker and route remote-agent requests to one device.
 /// </summary>
-public record DeviceInfo(string DeviceId, string? Name, bool Online);
+public record DeviceInfo(
+    string DeviceId,
+    string? Name,
+    bool Online,
+    string Platform = DevicePlatforms.Unknown,
+    bool RemoteAgentEnabled = false)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsDesktop => DevicePlatforms.IsDesktop(Platform);
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsEligibleHomeAgent => IsDesktop && RemoteAgentEnabled;
+}
+
+public static class DevicePlatforms
+{
+    public const string Unknown = "unknown";
+    public const string Windows = "windows";
+    public const string MacOS = "macos";
+    public const string Android = "android";
+    public const string IOS = "ios";
+
+    public static bool IsDesktop(string? platform)
+        => platform is not null
+           && (platform.Equals(Windows, StringComparison.OrdinalIgnoreCase)
+               || platform.Equals(MacOS, StringComparison.OrdinalIgnoreCase));
+}
 
 /// <summary>
 /// Canonical, stable derivation of a short device id from a device public key. Shared by the relay
@@ -339,6 +367,61 @@ public static class DeviceProtocol
     public static string DeviceId(string devicePublicKey)
         => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(devicePublicKey)))[..12].ToLowerInvariant();
+}
+
+public sealed record RemoteAgentRequestPayload(string RequestId, string ThreadId, string Prompt);
+
+public sealed record RemoteAgentResponsePayload(string RequestId, string ThreadId, string Text);
+
+public sealed record RemoteAgentDispatchResult(bool Accepted, string Code, string RequestId)
+{
+    public static RemoteAgentDispatchResult Ok(string requestId) => new(true, "accepted", requestId);
+    public static RemoteAgentDispatchResult Reject(string code, string requestId = "") => new(false, code, requestId);
+}
+
+public static class RemoteAgentProtocol
+{
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    public static string RequestBody(string requestId, string threadId, string prompt)
+        => JsonSerializer.Serialize(new RemoteAgentRequestPayload(requestId, threadId, prompt), Json);
+
+    public static string ResponseBody(string requestId, string threadId, string text)
+        => JsonSerializer.Serialize(new RemoteAgentResponsePayload(requestId, threadId, text), Json);
+
+    public static bool TryParseRequest(string? body, out RemoteAgentRequestPayload request)
+    {
+        request = default!;
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<RemoteAgentRequestPayload>(body ?? "", Json);
+            if (parsed is null
+                || string.IsNullOrWhiteSpace(parsed.RequestId)
+                || string.IsNullOrWhiteSpace(parsed.ThreadId)
+                || string.IsNullOrWhiteSpace(parsed.Prompt))
+                return false;
+            request = parsed;
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    public static bool TryParseResponse(string? body, out RemoteAgentResponsePayload response)
+    {
+        response = default!;
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<RemoteAgentResponsePayload>(body ?? "", Json);
+            if (parsed is null
+                || string.IsNullOrWhiteSpace(parsed.RequestId)
+                || string.IsNullOrWhiteSpace(parsed.ThreadId)
+                || string.IsNullOrWhiteSpace(parsed.Text))
+                return false;
+            response = parsed;
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
 }
 
 /// <summary>

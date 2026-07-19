@@ -139,10 +139,23 @@ public static class DeepLink
     public static string User(string handle)
         => $"mesh://user?handle={Uri.EscapeDataString(LinkProtocol.Normalize(handle))}";
 
+    /// <summary>mesh://link?handle=&amp;code=&amp;relay= for short-lived single-use device linking.</summary>
+    public static string Pairing(string handle, string code, string? relayUrl = null)
+    {
+        var q = $"handle={Uri.EscapeDataString(LinkProtocol.Normalize(handle))}&code={Uri.EscapeDataString(code.Trim())}";
+        if (!string.IsNullOrWhiteSpace(relayUrl))
+            q += $"&relay={Uri.EscapeDataString(relayUrl.TrimEnd('/'))}";
+        return $"mesh://link?{q}";
+    }
+
     public enum Kind { None, Service, User, Pairing }
 
     /// <summary>Parsed deep link. Fields are populated per <see cref="Kind"/>; Raw always echoes the input.</summary>
-    public readonly record struct Parsed(Kind Kind, string? Handle, string? ServiceId, string? ServiceName, string? Raw);
+    public readonly record struct Parsed(Kind Kind, string? Handle, string? ServiceId, string? ServiceName, string? Raw)
+    {
+        public string? PairingCode { get; init; }
+        public string? RelayUrl { get; init; }
+    }
 
     /// <summary>
     /// Tolerantly parses a mesh:// URI into a routing target. Returns Kind.None for anything that is not
@@ -164,10 +177,43 @@ public static class DeepLink
             case "user":
                 return new Parsed(Kind.User, LinkProtocol.Normalize(Get(q, "handle")), null, null, uri);
             case "link":
-                return new Parsed(Kind.Pairing, LinkProtocol.Normalize(Get(q, "handle")), null, null, uri);
+                return new Parsed(Kind.Pairing, LinkProtocol.Normalize(Get(q, "handle")), null, null, uri)
+                {
+                    PairingCode = Get(q, "code"),
+                    RelayUrl = Get(q, "relay")
+                };
             default:
                 return new Parsed(Kind.None, null, null, null, uri);
         }
+    }
+
+    public static bool TryParsePairing(string? value, out Parsed pairing)
+    {
+        pairing = default;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        var parsed = TryParse(value);
+        if (parsed.Kind == Kind.Pairing && !string.IsNullOrWhiteSpace(parsed.PairingCode))
+        {
+            pairing = parsed;
+            return true;
+        }
+
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
+            || !uri.AbsolutePath.Equals("/link", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var q = ParseQuery(string.IsNullOrWhiteSpace(uri.Fragment) ? uri.Query : uri.Fragment);
+        var code = Get(q, "code");
+        if (string.IsNullOrWhiteSpace(code)) return false;
+
+        pairing = new Parsed(Kind.Pairing, LinkProtocol.Normalize(Get(q, "handle")), null, null, value)
+        {
+            PairingCode = code,
+            RelayUrl = Get(q, "relay")
+        };
+        return true;
     }
 
     private static string Get(Dictionary<string, string> q, string key)
@@ -177,7 +223,7 @@ public static class DeepLink
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (string.IsNullOrEmpty(query)) return result;
-        foreach (var pair in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var pair in query.TrimStart('?', '#').Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             var eq = pair.IndexOf('=');
             if (eq < 0) { result[Uri.UnescapeDataString(pair)] = ""; continue; }
@@ -204,6 +250,14 @@ public static class UniversalLink
 
     public static string ForHandle(string handle)
         => $"{BaseUrl}/u/{Uri.EscapeDataString(LinkProtocol.Normalize(handle))}";
+
+    public static string ForPairing(string handle, string code, string? relayUrl = null)
+    {
+        var q = $"handle={Uri.EscapeDataString(LinkProtocol.Normalize(handle))}&code={Uri.EscapeDataString(code.Trim())}";
+        if (!string.IsNullOrWhiteSpace(relayUrl))
+            q += $"&relay={Uri.EscapeDataString(relayUrl.TrimEnd('/'))}";
+        return $"{BaseUrl}/link#{q}";
+    }
 }
 
 /// <summary>

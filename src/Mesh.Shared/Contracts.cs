@@ -403,6 +403,7 @@ public static class RemoteAgentProtocol
             request = parsed;
             return true;
         }
+
         catch (JsonException) { return false; }
     }
 
@@ -422,6 +423,81 @@ public static class RemoteAgentProtocol
         }
         catch (JsonException) { return false; }
     }
+}
+
+public static class DeviceSyncKinds
+{
+    public const string EnvelopeOperation = "device.sync.operation";
+    public const string EnvelopeSnapshotRequest = "device.sync.snapshot.request";
+
+    public const string TopicUpsert = "topic.upsert";
+    public const string TopicDelete = "topic.delete";
+    public const string TopicClear = "topic.clear";
+    public const string TopicLineUpsert = "topic.line.upsert";
+    public const string ConversationUpsert = "conversation.upsert";
+    public const string ConversationDelete = "conversation.delete";
+    public const string ConversationClear = "conversation.clear";
+    public const string ConversationLineUpsert = "conversation.line.upsert";
+
+    public static bool IsEnvelopeKind(string? kind)
+        => kind is EnvelopeOperation or EnvelopeSnapshotRequest;
+}
+
+public sealed record DeviceSyncOperation(
+    string OperationId,
+    string SourceDeviceId,
+    string Kind,
+    string EntityId,
+    string Version,
+    string Payload);
+
+public sealed record DeviceSyncBatch(
+    string BatchId,
+    string SourceDeviceId,
+    bool IsSnapshot,
+    IReadOnlyList<DeviceSyncOperation> Operations);
+
+public sealed record DeviceSyncSnapshotRequest(string RequestId, string RequestingDeviceId);
+
+public sealed record DeviceSyncTopic(
+    string Id,
+    string Title,
+    DateTimeOffset CreatedAt,
+    int SortOrder);
+
+public sealed record DeviceSyncConversation(
+    string Handle,
+    int SortOrder,
+    string? ServiceId,
+    string? ServiceName,
+    string? ProviderHandle,
+    string? GroupId,
+    string? GroupName,
+    string? GroupOwnerHandle,
+    IReadOnlyList<string> GroupMembers,
+    int GroupVersion);
+
+public sealed record DeviceSyncLine(
+    string Id,
+    string Role,
+    string Text,
+    string Via,
+    string Status,
+    DateTimeOffset At,
+    string? SenderHandle,
+    bool Internal,
+    string? Reasoning);
+
+public static class DeviceSyncVersion
+{
+    public static string Create(DateTimeOffset at, string sourceDeviceId, string operationId)
+        => $"{at.UtcDateTime.Ticks:D19}|{sourceDeviceId}|{operationId}";
+
+    public static int Compare(string? left, string? right)
+        => string.Compare(left ?? "", right ?? "", StringComparison.Ordinal);
+
+    public static bool IsNewer(string candidate, string? current)
+        => Compare(candidate, current) > 0;
 }
 
 /// <summary>

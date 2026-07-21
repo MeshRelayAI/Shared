@@ -438,8 +438,12 @@ public static class DeviceSyncKinds
     public const string ConversationDelete = "conversation.delete";
     public const string ConversationClear = "conversation.clear";
     public const string ConversationLineUpsert = "conversation.line.upsert";
+    public const string ContactUpsert = "contact.upsert";
+    public const string ContactDelete = "contact.delete";
+    public const string CircleUpsert = "circle.upsert";
+    public const string CircleDelete = "circle.delete";
 
-    public static bool IsEnvelopeKind(string? kind)
+     public static bool IsEnvelopeKind(string? kind)
         => kind is EnvelopeOperation or EnvelopeSnapshotRequest;
 }
 
@@ -476,6 +480,25 @@ public sealed record DeviceSyncConversation(
     string? GroupOwnerHandle,
     IReadOnlyList<string> GroupMembers,
     int GroupVersion);
+
+public sealed record DeviceSyncContact(
+    string Handle,
+    string? DisplayName,
+    IReadOnlyList<string> Circles,
+    bool Allowed,
+    IReadOnlyList<string> SigningKeys,
+    bool KeyChanged,
+    bool Muted,
+    bool Blocked);
+
+public sealed record DeviceSyncCircle(
+    string Name,
+    bool RequireApproval,
+    IReadOnlyList<DeviceSyncCircleRename>? Renames = null);
+
+public sealed record DeviceSyncCircleRename(
+    string PreviousName,
+    string DeleteVersion);
 
 public sealed record DeviceSyncLine(
     string Id,

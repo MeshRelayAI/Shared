@@ -21,7 +21,11 @@ public record RegisterHandleRequest(
     string? Signature = null,
     string? DeviceName = null,
     string? DevicePlatform = null,
-    bool RemoteAgentEnabled = false);
+    bool RemoteAgentEnabled = false)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AgentReady => RemoteAgentEnabled;
+}
 
 /// <summary>Canonical string a registrant signs with its device key to prove key possession.</summary>
 public static class ClaimProtocol
@@ -340,7 +344,11 @@ public record DeviceInfo(
     public bool IsDesktop => DevicePlatforms.IsDesktop(Platform);
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsEligibleHomeAgent => IsDesktop && RemoteAgentEnabled;
+    public bool IsAgentReady => RemoteAgentEnabled;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AgentReady => RemoteAgentEnabled;
+
 }
 
 public static class DevicePlatforms
@@ -463,11 +471,99 @@ public sealed record DeviceSyncBatch(
 
 public sealed record DeviceSyncSnapshotRequest(string RequestId, string RequestingDeviceId);
 
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record DeviceSyncTopic(
     string Id,
     string Title,
     DateTimeOffset CreatedAt,
-    int SortOrder);
+    int SortOrder,
+    string? ExecutionDeviceId = null,
+    string? ExecutionDeviceName = null,
+    string? ExecutionDevicePlatform = null,
+    DateTimeOffset? LastActivityAt = null,
+    bool IsPinned = false,
+    DateTimeOffset? ExecutionAt = null,
+    string? ExecutionRunId = null,
+    bool HasExecutionMetadata = false)
+{
+    public DeviceSyncTopic(
+        string id,
+        string title,
+        DateTimeOffset createdAt,
+        int sortOrder,
+        string? executionDeviceId,
+        DateTimeOffset? executionAt)
+        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
+            null, false, executionAt)
+    {
+    }
+
+    public DeviceSyncTopic(
+        string id,
+        string title,
+        DateTimeOffset createdAt,
+        int sortOrder,
+        string? executionDeviceId,
+        DateTimeOffset? executionAt,
+        string? executionRunId)
+        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
+            null, false, executionAt, executionRunId)
+    {
+    }
+
+    public DeviceSyncTopic(
+        string id,
+        string title,
+        DateTimeOffset createdAt,
+        int sortOrder,
+        string? executionDeviceId,
+        DateTimeOffset? executionAt,
+        string? executionRunId,
+        DateTimeOffset? lastActivityAt)
+        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
+            lastActivityAt, false, executionAt, executionRunId)
+    {
+    }
+
+    public DeviceSyncTopic(
+        string id,
+        string title,
+        DateTimeOffset createdAt,
+        int sortOrder,
+        string? executionDeviceId,
+        DateTimeOffset? executionAt,
+        string? executionRunId,
+        DateTimeOffset? lastActivityAt,
+        bool isPinned)
+        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
+            lastActivityAt, isPinned, executionAt, executionRunId)
+    {
+    }
+
+    public DeviceSyncTopic(
+        string id,
+        string title,
+        DateTimeOffset createdAt,
+        int sortOrder,
+        string? executionDeviceId,
+        DateTimeOffset? executionAt,
+        string? executionRunId,
+        DateTimeOffset? lastActivityAt,
+        bool isPinned,
+        bool hasExecutionMetadata)
+        : this(
+            id, title, createdAt, sortOrder, executionDeviceId, null, null,
+            lastActivityAt, isPinned, executionAt, executionRunId, hasExecutionMetadata)
+    {
+    }
+
+    public void Deconstruct(
+        out string id,
+        out string title,
+        out DateTimeOffset createdAt,
+        out int sortOrder)
+        => (id, title, createdAt, sortOrder) = (Id, Title, CreatedAt, SortOrder);
+}
 
 public sealed record DeviceSyncConversation(
     string Handle,
@@ -479,7 +575,28 @@ public sealed record DeviceSyncConversation(
     string? GroupName,
     string? GroupOwnerHandle,
     IReadOnlyList<string> GroupMembers,
-    int GroupVersion);
+    int GroupVersion,
+    DateTimeOffset? CreatedAt = null,
+    DateTimeOffset? LastActivityAt = null,
+    bool IsPinned = false,
+    bool HasActivityMetadata = false)
+{
+    public void Deconstruct(
+        out string handle,
+        out int sortOrder,
+        out string? serviceId,
+        out string? serviceName,
+        out string? providerHandle,
+        out string? groupId,
+        out string? groupName,
+        out string? groupOwnerHandle,
+        out IReadOnlyList<string> groupMembers,
+        out int groupVersion)
+        => (handle, sortOrder, serviceId, serviceName, providerHandle, groupId, groupName,
+                groupOwnerHandle, groupMembers, groupVersion)
+            = (Handle, SortOrder, ServiceId, ServiceName, ProviderHandle, GroupId, GroupName,
+                GroupOwnerHandle, GroupMembers, GroupVersion);
+}
 
 public sealed record DeviceSyncContact(
     string Handle,
@@ -683,9 +800,7 @@ public static class MeshKinds
     public const string Receipt = "receipt";
 
     /// <summary>
-    /// A request from one of the owner's OWN devices to another (e.g. phone to home desktop) asking
-    /// the remote device's agent to answer with its full local toolset. Only honored between devices
-    /// sharing the same handle when the target has opted in (ActAsRemoteAgent).
+    /// Legacy request kind retained only so new clients can explicitly reject pre-1.8 callers.
     /// </summary>
     public const string RemoteAgentRequest = "remote.request";
 
@@ -711,6 +826,302 @@ public static class MeshKinds
     /// review (Microsoft Store Policy 11.16). The body is <see cref="ReportProtocol"/>-framed.
     /// </summary>
     public const string Report = "report";
+
+    public const string TopicRunRequest = "topic.run.request";
+    public const string TopicRunUpdate = "topic.run.update";
+    public const string TopicRunCancel = "topic.run.cancel";
+    public const string AttachmentChunk = "attachment.chunk";
+    public const string TopicAttachmentChunk = "topic.attachment.chunk";
+}
+
+[System.Text.Json.Serialization.JsonConverter(
+    typeof(TopicRunPhaseJsonConverter))]
+public enum TopicRunPhase
+{
+    Queued, Planning, Executing, Verifying, Completed, Failed, Cancelled
+}
+
+[System.Text.Json.Serialization.JsonConverter(
+    typeof(TopicTurnModeJsonConverter))]
+public enum TopicTurnMode { Single, Autonomous }
+
+[System.Text.Json.Serialization.JsonConverter(
+    typeof(TopicRunItemStateJsonConverter))]
+public enum TopicRunItemState { Pending, Running, Completed, Failed, Cancelled }
+
+public sealed class TopicRunPhaseJsonConverter
+    : System.Text.Json.Serialization.JsonStringEnumConverter<TopicRunPhase>
+{
+    public TopicRunPhaseJsonConverter() : base(JsonNamingPolicy.CamelCase, allowIntegerValues: false) { }
+}
+
+public sealed class TopicTurnModeJsonConverter
+    : System.Text.Json.Serialization.JsonStringEnumConverter<TopicTurnMode>
+{
+    public TopicTurnModeJsonConverter() : base(JsonNamingPolicy.CamelCase, allowIntegerValues: false) { }
+}
+
+public sealed class TopicRunItemStateJsonConverter
+    : System.Text.Json.Serialization.JsonStringEnumConverter<TopicRunItemState>
+{
+    public TopicRunItemStateJsonConverter() : base(JsonNamingPolicy.CamelCase, allowIntegerValues: false) { }
+}
+
+public sealed record TopicRunAttachment(
+    string Id,
+    string Name,
+    string MimeType,
+    long Length);
+
+public sealed record TopicRunRequestPayload(
+    string RunId,
+    string ThreadId,
+    string TriggerLineId,
+    string TriggerHandle,
+    string TriggerText,
+    DateTimeOffset TriggerAt,
+    string TargetDeviceId,
+    TopicTurnMode TurnMode,
+    string? WidgetId = null,
+    string? WidgetContext = null,
+    IReadOnlyList<TopicRunAttachment>? Attachments = null,
+    IReadOnlyList<string>? AttachmentIds = null);
+
+public sealed record TopicRunCancelPayload(
+    string RunId,
+    string ThreadId);
+
+public sealed record TopicRunSubtask(
+    string Id,
+    string Title,
+    TopicRunItemState State,
+    string? Result = null);
+
+public sealed record TopicRunStep(
+    string Tool,
+    string Label,
+    TopicRunItemState State,
+    string? Arguments = null,
+    string? Result = null);
+
+public sealed record TopicRunUpdatePayload(
+    string RunId,
+    string ThreadId,
+    TopicRunPhase Phase,
+    string? Status = null,
+    string? Plan = null,
+    IReadOnlyList<TopicRunSubtask>? Subtasks = null,
+    IReadOnlyList<TopicRunStep>? Steps = null,
+    int Queued = 0,
+    string? Error = null,
+    string? FailureCode = null,
+    DateTimeOffset Timestamp = default);
+
+public sealed record AttachmentChunkPayload(
+    string RunId,
+    string AttachmentId,
+    int Index,
+    int Count,
+    byte[] Data,
+    string Name,
+    string MimeType)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int Total => Count;
+}
+
+public static class AttachmentChunkProtocol
+{
+    public const int MaxChunkBytes = 32 * 1024;
+    public const int MaxChunks = 256;
+    public const long MaxAttachmentBytes = (long)MaxChunkBytes * MaxChunks;
+}
+
+public static class TopicRunProtocol
+{
+    public const int MaxPayloadChars = 12 * 1024 * 1024;
+    public const int MaxIdChars = 256;
+    public const int MaxTextChars = 1_000_000;
+    public const int MaxWidgetContextChars = 64 * 1024;
+    public const int MaxItems = 256;
+    private static readonly JsonSerializerOptions Json = CreateJsonOptions();
+
+    private static JsonSerializerOptions CreateJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(
+            JsonNamingPolicy.CamelCase, allowIntegerValues: false));
+        return options;
+    }
+
+    public static string RequestBody(TopicRunRequestPayload p) => JsonSerializer.Serialize(p, Json);
+    public static string UpdateBody(TopicRunUpdatePayload p) => JsonSerializer.Serialize(p, Json);
+    public static string CancelBody(TopicRunCancelPayload p) => JsonSerializer.Serialize(p, Json);
+    public static string ChunkBody(AttachmentChunkPayload p) => JsonSerializer.Serialize(p, Json);
+
+    public static bool IsValidIdentifier(string? value) => ValidId(value);
+
+    public static bool TryParseRequest(string? body, out TopicRunRequestPayload result)
+    {
+        result = default!;
+        if (!CanParse(body)) return false;
+        try
+        {
+            var p = JsonSerializer.Deserialize<TopicRunRequestPayload>(body!, Json);
+            if (p is null
+                || !ValidId(p.RunId)
+                || !ValidId(p.ThreadId)
+                || !ValidId(p.TriggerLineId)
+                || !ValidId(p.TriggerHandle)
+                || string.IsNullOrWhiteSpace(p.TriggerText)
+                || p.TriggerText.Length > MaxTextChars
+                || p.TriggerAt == default
+                || !ValidId(p.TargetDeviceId)
+                || !Enum.IsDefined(p.TurnMode)
+                || (p.WidgetId is not null && !ValidId(p.WidgetId))
+                || p.WidgetContext is not null
+                   && (p.WidgetContext.Length == 0
+                       || p.WidgetContext.Length > MaxWidgetContextChars)
+                || !ValidAttachments(p.Attachments, p.AttachmentIds))
+                return false;
+            result = p;
+            return true;
+        }
+        catch (JsonException) { return false; }
+        catch (NotSupportedException) { return false; }
+    }
+
+    public static bool TryParseUpdate(string? body, out TopicRunUpdatePayload result)
+    {
+        result = default!;
+        if (!CanParse(body)) return false;
+        try
+        {
+            var p = JsonSerializer.Deserialize<TopicRunUpdatePayload>(body!, Json);
+            if (p is null
+                || !ValidId(p.RunId)
+                || !ValidId(p.ThreadId)
+                || !Enum.IsDefined(p.Phase)
+                || p.Queued < 0
+                || p.Queued > MaxItems
+                || p.Timestamp == default
+                || !ValidOptionalText(p.Status)
+                || !ValidOptionalText(p.Plan)
+                || !ValidOptionalText(p.Error)
+                || !ValidOptionalText(p.FailureCode)
+                || !ValidSubtasks(p.Subtasks)
+                || !ValidSteps(p.Steps))
+                return false;
+            result = p;
+            return true;
+        }
+        catch (JsonException) { return false; }
+        catch (NotSupportedException) { return false; }
+    }
+
+    public static bool TryParseCancel(string? body, out TopicRunCancelPayload result)
+    {
+        result = default!;
+        if (!CanParse(body)) return false;
+        try
+        {
+            var p = JsonSerializer.Deserialize<TopicRunCancelPayload>(body!, Json);
+            if (p is null || !ValidId(p.RunId) || !ValidId(p.ThreadId)) return false;
+            result = p;
+            return true;
+        }
+        catch (JsonException) { return false; }
+        catch (NotSupportedException) { return false; }
+    }
+
+    public static bool TryParseChunk(string? body, out AttachmentChunkPayload result)
+    {
+        result = default!;
+        if (!CanParse(body)) return false;
+        try
+        {
+            var p = JsonSerializer.Deserialize<AttachmentChunkPayload>(body!, Json);
+            if (p is null
+                || !ValidId(p.RunId)
+                || !ValidId(p.AttachmentId)
+                || p.Count is < 1 or > AttachmentChunkProtocol.MaxChunks
+                || p.Index < 0
+                || p.Index >= p.Count
+                || p.Data is null
+                || p.Data.Length == 0
+                || p.Data.Length > AttachmentChunkProtocol.MaxChunkBytes
+                || string.IsNullOrWhiteSpace(p.Name)
+                || p.Name.Length > MaxIdChars
+                || string.IsNullOrWhiteSpace(p.MimeType)
+                || p.MimeType.Length > MaxIdChars)
+                return false;
+            result = p;
+            return true;
+        }
+        catch (JsonException) { return false; }
+        catch (NotSupportedException) { return false; }
+    }
+
+    private static bool CanParse(string? body)
+        => !string.IsNullOrWhiteSpace(body) && body.Length <= MaxPayloadChars;
+
+    private static bool ValidId(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.Length <= MaxIdChars
+           && string.Equals(value, value.Trim(), StringComparison.Ordinal)
+           && !value.Any(char.IsControl);
+
+    private static bool ValidOptionalText(string? value)
+        => value is null || value.Length <= MaxTextChars;
+
+    private static bool ValidAttachments(
+        IReadOnlyList<TopicRunAttachment>? attachments,
+        IReadOnlyList<string>? attachmentIds)
+    {
+        if ((attachments?.Count ?? 0) > MaxItems || (attachmentIds?.Count ?? 0) > MaxItems)
+            return false;
+        if (attachmentIds?.Any(id => !ValidId(id)) == true) return false;
+        if (attachmentIds is not null
+            && attachmentIds.Distinct(StringComparer.Ordinal).Count() != attachmentIds.Count)
+            return false;
+        if (attachments is null) return true;
+        if (attachments.Any(attachment => attachment is null)) return false;
+        if (attachments.Select(attachment => attachment.Id)
+                .Distinct(StringComparer.Ordinal).Count() != attachments.Count)
+            return false;
+        if (attachmentIds is not null
+            && !attachments.Select(attachment => attachment.Id)
+                .Order(StringComparer.Ordinal)
+                .SequenceEqual(attachmentIds.Order(StringComparer.Ordinal), StringComparer.Ordinal))
+            return false;
+        return attachments.All(attachment =>
+            attachment is not null
+            && ValidId(attachment.Id)
+            && !string.IsNullOrWhiteSpace(attachment.Name)
+            && attachment.Name.Length <= MaxIdChars
+            && !string.IsNullOrWhiteSpace(attachment.MimeType)
+            && attachment.MimeType.Length <= MaxIdChars
+            && attachment.Length is >= 0 and <= AttachmentChunkProtocol.MaxAttachmentBytes);
+    }
+
+    private static bool ValidSubtasks(IReadOnlyList<TopicRunSubtask>? items)
+        => items is null
+           || items.Count <= MaxItems
+           && items.All(item => item is not null
+                                && ValidId(item.Id)
+                                && ValidOptionalText(item.Title)
+                                && Enum.IsDefined(item.State)
+                                && ValidOptionalText(item.Result));
+
+    private static bool ValidSteps(IReadOnlyList<TopicRunStep>? items)
+        => items is null
+           || items.Count <= MaxItems
+           && items.All(item => item is not null
+                                && ValidId(item.Tool)
+                                && ValidOptionalText(item.Label)
+                                && Enum.IsDefined(item.State)
+                                && ValidOptionalText(item.Arguments)
+                                && ValidOptionalText(item.Result));
 }
 
 /// <summary>

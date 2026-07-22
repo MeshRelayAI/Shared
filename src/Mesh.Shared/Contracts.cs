@@ -34,6 +34,28 @@ public static class ClaimProtocol
         => $"handle-claim|{LinkProtocol.Normalize(handle)}|{devicePublicKey}";
 }
 
+/// <summary>Canonical string a device signs to register (or clear) its push token, binding the token to handle+device+platform.</summary>
+public static class PushTokenProtocol
+{
+    public static string Message(string handle, string deviceId, string platform, string token)
+        => $"push-token|{LinkProtocol.Normalize(handle)}|{deviceId}|{platform}|{token}";
+
+    public static string ClearMessage(string handle, string deviceId)
+        => $"push-token-clear|{LinkProtocol.Normalize(handle)}|{deviceId}";
+}
+
+/// <summary>Registers (or refreshes) this device's push token with the relay, signed with the device key.</summary>
+public sealed record SetDevicePushTokenRequest(
+    string DevicePublicKey,
+    string Platform,
+    string Token,
+    string Signature);
+
+/// <summary>Clears this device's push token (for example on sign-out), signed with the device key.</summary>
+public sealed record DeleteDevicePushTokenRequest(
+    string DevicePublicKey,
+    string Signature);
+
 public record RegisterHandleResponse(
     string Handle,
     string DeviceId,

@@ -786,6 +786,14 @@ public static class FanoutProtocol
 /// </summary>
 public static class MessageLimits
 {
+    /// <summary>
+    /// Maximum SignalR invocation size accepted during the compatibility window. Older clients can
+    /// send large inline Device Sync snapshots before receiving a structured rejection. Keep the
+    /// transport ceiling above those legacy frames so the hub can return <c>message_too_large</c>
+    /// instead of aborting the socket and causing an endless reconnect loop.
+    /// </summary>
+    public const int MaxTransportMessageBytes = 12 * 1024 * 1024;
+
     /// <summary>Max bytes for an envelope Body (E2EE, base64 ciphertext). Kept safely under the Cosmos
     /// 2 MB per-item limit once the remaining envelope fields and system properties are added.</summary>
     public const int MaxEnvelopeBodyBytes = 1_800_000;

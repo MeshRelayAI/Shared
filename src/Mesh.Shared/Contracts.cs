@@ -780,6 +780,22 @@ public static class FanoutProtocol
 }
 
 /// <summary>
+/// Hard size limits shared by client and relay. The relay persists each envelope as a single Cosmos
+/// item (hard 2 MB ceiling), so bodies are capped well below that; larger payloads must be sent as a
+/// blob attachment pointer rather than inlined.
+/// </summary>
+public static class MessageLimits
+{
+    /// <summary>Max bytes for an envelope Body (E2EE, base64 ciphertext). Kept safely under the Cosmos
+    /// 2 MB per-item limit once the remaining envelope fields and system properties are added.</summary>
+    public const int MaxEnvelopeBodyBytes = 1_800_000;
+
+    /// <summary>Max size of a single attachment. Attachments live in blob storage and are never inlined
+    /// into an envelope; the envelope carries only a pointer.</summary>
+    public const long MaxAttachmentBytes = 20L * 1024 * 1024;
+}
+
+/// <summary>
 /// Complete client-side group metadata carried only inside an end-to-end encrypted envelope body.
 /// </summary>
 public sealed record GroupSnapshotPayload(
@@ -893,7 +909,10 @@ public sealed record TopicRunAttachment(
     string Id,
     string Name,
     string MimeType,
-    long Length);
+    long Length,
+    string? BlobId = null,
+    string? Key = null,
+    string? Sha256 = null);
 
 public sealed record TopicRunRequestPayload(
     string RunId,
@@ -1123,7 +1142,19 @@ public static class TopicRunProtocol
             && attachment.Name.Length <= MaxIdChars
             && !string.IsNullOrWhiteSpace(attachment.MimeType)
             && attachment.MimeType.Length <= MaxIdChars
-            && attachment.Length is >= 0 and <= AttachmentChunkProtocol.MaxAttachmentBytes);
+            && attachment.Length is >= 0 and <= MessageLimits.MaxAttachmentBytes
+            && ValidAttachmentPointer(attachment));
+    }
+
+    // When an attachment carries a blob pointer, all three parts (BlobId, Key, Sha256) must be present
+    // and the blob id well-formed. Attachments travel as blob ciphertext; the pointer rides the E2EE body.
+    private static bool ValidAttachmentPointer(TopicRunAttachment attachment)
+    {
+        if (attachment.BlobId is null && attachment.Key is null && attachment.Sha256 is null)
+            return true;
+        return AttachmentProtocol.IsValidBlobId(attachment.BlobId)
+               && !string.IsNullOrEmpty(attachment.Key)
+               && !string.IsNullOrEmpty(attachment.Sha256);
     }
 
     private static bool ValidSubtasks(IReadOnlyList<TopicRunSubtask>? items)

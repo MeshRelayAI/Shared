@@ -914,6 +914,10 @@ public enum TopicTurnMode { Single, Autonomous }
     typeof(TopicRunItemStateJsonConverter))]
 public enum TopicRunItemState { Pending, Running, Completed, Failed, Cancelled }
 
+[System.Text.Json.Serialization.JsonConverter(
+    typeof(TopicRunDeltaKindJsonConverter))]
+public enum TopicRunDeltaKind { Reasoning, Answer }
+
 public sealed class TopicRunPhaseJsonConverter
     : System.Text.Json.Serialization.JsonStringEnumConverter<TopicRunPhase>
 {
@@ -930,6 +934,12 @@ public sealed class TopicRunItemStateJsonConverter
     : System.Text.Json.Serialization.JsonStringEnumConverter<TopicRunItemState>
 {
     public TopicRunItemStateJsonConverter() : base(JsonNamingPolicy.CamelCase, allowIntegerValues: false) { }
+}
+
+public sealed class TopicRunDeltaKindJsonConverter
+    : System.Text.Json.Serialization.JsonStringEnumConverter<TopicRunDeltaKind>
+{
+    public TopicRunDeltaKindJsonConverter() : base(JsonNamingPolicy.CamelCase, allowIntegerValues: false) { }
 }
 
 public sealed record TopicRunAttachment(
@@ -983,7 +993,13 @@ public sealed record TopicRunUpdatePayload(
     int Queued = 0,
     string? Error = null,
     string? FailureCode = null,
-    DateTimeOffset Timestamp = default);
+    DateTimeOffset Timestamp = default,
+    // Optional live streaming of the reply as it is generated. When Delta is set it carries one
+    // coalesced reasoning/answer fragment (DeltaKind) with a per-run monotonic DeltaSeq for ordered,
+    // exactly-once application on a viewing device. Non-streaming updates leave these unset.
+    int DeltaSeq = 0,
+    TopicRunDeltaKind? DeltaKind = null,
+    string? Delta = null);
 
 public sealed record AttachmentChunkPayload(
     string RunId,
@@ -1012,6 +1028,8 @@ public static class TopicRunProtocol
     public const int MaxTextChars = 1_000_000;
     public const int MaxWidgetContextChars = 64 * 1024;
     public const int MaxItems = 256;
+    public const int MaxDeltaChars = 64 * 1024;
+    public const int MaxDeltaSeq = 1_000_000;
     private static readonly JsonSerializerOptions Json = CreateJsonOptions();
 
     private static JsonSerializerOptions CreateJsonOptions()
@@ -1078,7 +1096,8 @@ public static class TopicRunProtocol
                 || !ValidOptionalText(p.Error)
                 || !ValidOptionalText(p.FailureCode)
                 || !ValidSubtasks(p.Subtasks)
-                || !ValidSteps(p.Steps))
+                || !ValidSteps(p.Steps)
+                || !ValidDelta(p.Delta, p.DeltaKind, p.DeltaSeq))
                 return false;
             result = p;
             return true;
@@ -1202,6 +1221,17 @@ public static class TopicRunProtocol
                                 && Enum.IsDefined(item.State)
                                 && ValidOptionalText(item.Arguments)
                                 && ValidOptionalText(item.Result));
+
+    // A streamed reply fragment is optional. When present it must be a non-empty, bounded chunk with a
+    // defined stream (reasoning or answer) and a positive per-run sequence number; a bare kind with no
+    // text, an out-of-range sequence, or an undefined kind is rejected.
+    private static bool ValidDelta(string? delta, TopicRunDeltaKind? kind, int seq)
+    {
+        if (seq < 0 || seq > MaxDeltaSeq) return false;
+        if (kind is not null && !Enum.IsDefined(kind.Value)) return false;
+        if (delta is null) return true;
+        return delta.Length > 0 && delta.Length <= MaxDeltaChars && kind is not null && seq >= 1;
+    }
 }
 
 /// <summary>

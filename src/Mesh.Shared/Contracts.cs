@@ -368,6 +368,15 @@ public record DeviceInfo(
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsAgentReady => RemoteAgentEnabled;
 
+    /// <summary>
+    /// True when this device may host a remote agent turn for another of the owner's devices: it
+    /// advertised the capability (ready model, opted in) and runs on a desktop platform. Mobile devices
+    /// run their own chats locally but cannot host a turn for another device, so they are never eligible
+    /// remote hosts. The relay clamps to this at registration and clients apply the same rule.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool CanHostRemoteTurn => DevicePlatforms.CanHostRemoteAgent(RemoteAgentEnabled, Platform);
+
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentReady => RemoteAgentEnabled;
 
@@ -385,6 +394,16 @@ public static class DevicePlatforms
         => platform is not null
            && (platform.Equals(Windows, StringComparison.OrdinalIgnoreCase)
                || platform.Equals(MacOS, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The effective remote-agent-host capability for a device: it may host a remote agent turn for
+    /// another of the owner's devices only if it both requested the capability (ready model, opted in)
+    /// and runs on a desktop platform. Mobile platforms cannot run a background agent turn, so they are
+    /// never remote hosts. The relay clamps registrations to this so the device directory never
+    /// advertises a mobile device as a host; clients apply the same rule client-side.
+    /// </summary>
+    public static bool CanHostRemoteAgent(bool requested, string? platform)
+        => requested && IsDesktop(platform);
 }
 
 /// <summary>

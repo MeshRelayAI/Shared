@@ -667,7 +667,8 @@ public sealed record DeviceSyncLine(
     DateTimeOffset At,
     string? SenderHandle,
     bool Internal,
-    string? Reasoning);
+    string? Reasoning,
+    string? ReplyToLineId = null);
 
 public static class DeviceSyncVersion
 {
@@ -736,6 +737,34 @@ public static class HostedModelProtocol
 }
 
 /// <summary>
+/// Metadata-only hints that let the relay compose a notification without inspecting encrypted content.
+/// A topic-response hint is valid only for a same-handle update targeted between two distinct devices.
+/// </summary>
+public static class PushHintProtocol
+{
+    public const string TopicResponse = "topic.response";
+
+    public static string? ForTopicRunPhase(TopicRunPhase phase)
+        => phase == TopicRunPhase.Completed ? TopicResponse : null;
+
+    public static bool IsTopicResponse(MeshEnvelope envelope)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+        return string.Equals(envelope.PushHint, TopicResponse, StringComparison.Ordinal)
+               && string.Equals(envelope.Kind, MeshKinds.TopicRunUpdate, StringComparison.Ordinal)
+               && !string.IsNullOrWhiteSpace(envelope.From)
+               && !string.IsNullOrWhiteSpace(envelope.To)
+               && string.Equals(
+                   LinkProtocol.Normalize(envelope.From),
+                   LinkProtocol.Normalize(envelope.To),
+                   StringComparison.Ordinal)
+               && !string.IsNullOrWhiteSpace(envelope.FromDevice)
+               && !string.IsNullOrWhiteSpace(envelope.ToDevice)
+               && !string.Equals(envelope.FromDevice, envelope.ToDevice, StringComparison.Ordinal);
+    }
+}
+
+/// <summary>
 /// An end-to-end message routed by the relay between two handles.
 /// The relay treats <see cref="Body"/> as opaque and never inspects it.
 /// </summary>
@@ -748,11 +777,13 @@ public record MeshEnvelope(
     string? Signature,
     DateTimeOffset SentAt,
     string? FromDevice = null,
-    string? ToDevice = null)
+    string? ToDevice = null,
+    string? PushHint = null)
 {
     public static MeshEnvelope Create(string from, string to, string kind, string body, string? signature = null,
-        string? fromDevice = null, string? toDevice = null)
-        => new(Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow, fromDevice, toDevice);
+        string? fromDevice = null, string? toDevice = null, string? pushHint = null)
+        => new(Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow,
+            fromDevice, toDevice, pushHint);
 }
 
 /// <summary>
@@ -999,7 +1030,10 @@ public sealed record TopicRunUpdatePayload(
     // exactly-once application on a viewing device. Non-streaming updates leave these unset.
     int DeltaSeq = 0,
     TopicRunDeltaKind? DeltaKind = null,
-    string? Delta = null);
+    string? Delta = null,
+    // Identifies the user line represented by this run. Queue lifecycle updates use it to keep the
+    // transient "queued" subtitle attached to the right line on the submitting or executing device.
+    string? TriggerLineId = null);
 
 public sealed record AttachmentChunkPayload(
     string RunId,
@@ -1097,6 +1131,8 @@ public static class TopicRunProtocol
                 || !ValidOptionalText(p.FailureCode)
                 || !ValidSubtasks(p.Subtasks)
                 || !ValidSteps(p.Steps)
+                || p.TriggerLineId is not null
+                   && !ValidId(p.TriggerLineId)
                 || !ValidDelta(p.Delta, p.DeltaKind, p.DeltaSeq))
                 return false;
             result = p;

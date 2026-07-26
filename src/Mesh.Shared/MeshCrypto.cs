@@ -106,6 +106,31 @@ public static class MessageCrypto
     }
 
     /// <summary>
+    /// Returns the device ids with wrapped content keys in an encrypted body. This reads only
+    /// recipient key-slot metadata; it never decrypts or exposes the message plaintext.
+    /// </summary>
+    public static IReadOnlyList<string> EncryptedDeviceIds(string? body)
+    {
+        if (string.IsNullOrEmpty(body) || body[0] != '{') return Array.Empty<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("alg", out var algorithm)
+                || algorithm.GetString() != Alg
+                || !root.TryGetProperty("keys", out var keys)
+                || keys.ValueKind != JsonValueKind.Object)
+                return Array.Empty<string>();
+            return keys.EnumerateObject()
+                .Select(property => property.Name)
+                .Where(deviceId => !string.IsNullOrWhiteSpace(deviceId))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch { return Array.Empty<string>(); }
+    }
+
+    /// <summary>
     /// Attempts to decrypt a body with this device's key pair. Returns (true, plaintext) on
     /// success; (false, null) if the body is not encrypted, is not addressed to this device,
     /// or fails authentication.

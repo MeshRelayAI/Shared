@@ -735,7 +735,8 @@ public sealed record DeviceSyncLine(
     string? SenderHandle,
     bool Internal,
     string? Reasoning,
-    string? ReplyToLineId = null);
+    string? ReplyToLineId = null,
+    string? ModelId = null);
 
 public static class DeviceSyncVersion
 {

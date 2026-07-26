@@ -458,6 +458,13 @@ public static class AgentDispatchCodes
     public const string Queued = "agent_dispatch_queued";
 }
 
+public static class DurableDeliveryCodes
+{
+    public const string Delivered = "delivery_live";
+    public const string RelayQueued = "relay_queued";
+    public const string LocalQueued = "local_queued";
+}
+
 public static class AgentDispatchProtocol
 {
     public static bool IsAtomicRequest(string? kind)
@@ -543,7 +550,7 @@ public static class DeviceSyncKinds
     public const string MemoryUpsert = "memory.upsert";
     public const string MemoryDelete = "memory.delete";
 
-     public static bool IsEnvelopeKind(string? kind)
+    public static bool IsEnvelopeKind(string? kind)
         => kind is EnvelopeOperation or EnvelopeSnapshotRequest;
 }
 
@@ -848,7 +855,9 @@ public record MeshEnvelope(
     string? ToDevice = null,
     string? PushHint = null,
     string? AgentRequestId = null,
-    string? AgentDispatchToken = null)
+    string? AgentDispatchToken = null,
+    string? RelayDeliveryId = null,
+    bool RelayDeviceScoped = false)
 {
     public static MeshEnvelope Create(string from, string to, string kind, string body, string? signature = null,
         string? fromDevice = null, string? toDevice = null, string? pushHint = null,
@@ -878,12 +887,19 @@ public sealed record MeshSendResult(
     bool Accepted,
     string Code,
     int RetryAfterMs = 0,
-    int RecipientCount = 0)
+    int RecipientCount = 0,
+    string? QueueId = null)
 {
     public static MeshSendResult Ok(int recipientCount = 1) => new(true, "accepted", 0, recipientCount);
+    public static MeshSendResult Queued(string queueId)
+        => new(true, DurableDeliveryCodes.RelayQueued, 0, 1, queueId);
+    public static MeshSendResult Delivered(string queueId)
+        => new(true, DurableDeliveryCodes.Delivered, 0, 1, queueId);
     public static MeshSendResult Reject(string code, int retryAfterMs = 0)
         => new(false, code, Math.Max(0, retryAfterMs), 0);
 }
+
+public sealed record CancelQueuedEnvelopeRequest(string EnvelopeId, string TargetDeviceId);
 
 /// <summary>Batch request for public device encryption keys.</summary>
 public sealed record HandleKeysBatchRequest(IReadOnlyList<string> Handles);
@@ -1602,6 +1618,9 @@ public static class MeshHubProtocol
     public const string Authenticate = "Authenticate";
     public const string SendEnvelope = "SendEnvelope";
     public const string SendFanout = "SendFanout";
+    public const string AcknowledgeDelivery = "AcknowledgeDelivery";
+    public const string RequestPendingDeliveries = "RequestPendingDeliveries";
+    public const string CancelQueuedEnvelope = "CancelQueuedEnvelope";
 
     // Server -> client events.
     public const string Challenge = "Challenge"; // payload: nonce (string)

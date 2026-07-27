@@ -540,6 +540,7 @@ public static class DeviceSyncKinds
     public const string TopicDelete = "topic.delete";
     public const string TopicClear = "topic.clear";
     public const string TopicLineUpsert = "topic.line.upsert";
+    public const string TopicLineDelete = "topic.line.delete";
     public const string ConversationUpsert = "conversation.upsert";
     public const string ConversationDelete = "conversation.delete";
     public const string ConversationClear = "conversation.clear";
@@ -553,6 +554,54 @@ public static class DeviceSyncKinds
 
     public static bool IsEnvelopeKind(string? kind)
         => kind is EnvelopeOperation or EnvelopeSnapshotRequest;
+}
+
+public static class DeviceSyncEntityIds
+{
+    public static string TopicLine(string threadId, string lineId)
+    {
+        if (!TopicRunProtocol.IsValidIdentifier(threadId))
+            throw new ArgumentException("A valid thread ID is required.", nameof(threadId));
+        if (!TopicRunProtocol.IsValidIdentifier(lineId))
+            throw new ArgumentException("A valid line ID is required.", nameof(lineId));
+        // Length-prefix the thread ID because either identifier may contain separator characters.
+        return threadId.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+               + ":" + threadId + lineId;
+    }
+
+    public static bool TryParseTopicLine(
+        string? entityId,
+        out string threadId,
+        out string lineId)
+    {
+        threadId = "";
+        lineId = "";
+        if (string.IsNullOrWhiteSpace(entityId)
+            || entityId.Length > TopicRunProtocol.MaxIdChars * 2 + 16)
+            return false;
+        var separator = entityId.IndexOf(':');
+        if (separator <= 0
+            || !int.TryParse(
+                entityId.AsSpan(0, separator),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var threadLength)
+            || !string.Equals(
+                entityId[..separator],
+                threadLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                StringComparison.Ordinal)
+            || threadLength < 1
+            || separator + 1 + threadLength >= entityId.Length)
+            return false;
+        threadId = entityId.Substring(separator + 1, threadLength);
+        lineId = entityId[(separator + 1 + threadLength)..];
+        if (TopicRunProtocol.IsValidIdentifier(threadId)
+            && TopicRunProtocol.IsValidIdentifier(lineId))
+            return true;
+        threadId = "";
+        lineId = "";
+        return false;
+    }
 }
 
 public sealed record DeviceSyncOperation(

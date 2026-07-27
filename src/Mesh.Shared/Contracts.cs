@@ -50,7 +50,8 @@ public sealed record SetDevicePushTokenRequest(
     string DevicePublicKey,
     string Platform,
     string Token,
-    string Signature);
+    string Signature,
+    bool AlertsEnabled = true);
 
 /// <summary>Clears this device's push token (for example on sign-out), signed with the device key.</summary>
 public sealed record DeleteDevicePushTokenRequest(
@@ -1017,6 +1018,21 @@ public static class MeshKinds
     public const string TopicRunCancel = "topic.run.cancel";
     public const string AttachmentChunk = "attachment.chunk";
     public const string TopicAttachmentChunk = "topic.attachment.chunk";
+}
+
+/// <summary>Envelope kinds that must wait for a foreground-capable client connection.</summary>
+public static class BackgroundSyncProtocol
+{
+    public static bool RequiresForeground(string kind) => kind is
+        MeshKinds.Chat
+        or MeshKinds.AgentRequest
+        or MeshKinds.AtomicAgentRequest
+        or MeshKinds.ServiceRequest
+        or MeshKinds.TopicRunRequest
+        or MeshKinds.TopicRunCancel
+        or MeshKinds.AttachmentChunk
+        or MeshKinds.TopicAttachmentChunk
+        or DeviceSyncKinds.EnvelopeSnapshotRequest;
 }
 
 [System.Text.Json.Serialization.JsonConverter(

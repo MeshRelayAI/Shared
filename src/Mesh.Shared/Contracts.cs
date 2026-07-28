@@ -22,7 +22,8 @@ public record RegisterHandleRequest(
     string? DeviceName = null,
     string? DevicePlatform = null,
     bool RemoteAgentEnabled = false,
-    bool AtomicAgentDispatchEnabled = false)
+    bool AtomicAgentDispatchEnabled = false,
+    int ProtocolVersion = 6)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentReady => RemoteAgentEnabled;
@@ -95,6 +96,22 @@ public record DeleteHandleRequest(
     string Handle,
     string DevicePublicKey,
     string Signature);
+
+public sealed record RevokeDeviceRequest(
+    string DevicePublicKey,
+    string TargetDeviceId,
+    string Signature);
+
+public sealed record RevokeDeviceResponse(
+    bool Revoked,
+    int PurgedEnvelopes,
+    string DeviceId);
+
+public static class DeviceRevocationProtocol
+{
+    public static string Message(string handle, string targetDeviceId)
+        => $"device-revoke|{LinkProtocol.Normalize(handle)}|{targetDeviceId.Trim()}";
+}
 
 /// <summary>Canonical string a device signs to delete (release) its handle.</summary>
 public static class DeleteProtocol
@@ -363,7 +380,8 @@ public record DeviceInfo(
     bool Online,
     string Platform = DevicePlatforms.Unknown,
     bool RemoteAgentEnabled = false,
-    bool AtomicAgentDispatchEnabled = false)
+    bool AtomicAgentDispatchEnabled = false,
+    int ProtocolVersion = 6)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsDesktop => DevicePlatforms.IsDesktop(Platform);
@@ -423,6 +441,11 @@ public static class DeviceProtocol
     public static string DeviceId(string devicePublicKey)
         => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(devicePublicKey)))[..12].ToLowerInvariant();
+
+    public static bool IsValidDeviceId(string? deviceId)
+        => deviceId is { Length: 12 }
+            && deviceId.All(static character =>
+                (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'));
 }
 
 public sealed record AgentRoutingQueryRequest(string DevicePublicKey, string Signature);
@@ -535,6 +558,9 @@ public static class DeviceSyncKinds
 {
     public const string EnvelopeOperation = "device.sync.operation";
     public const string EnvelopeSnapshotRequest = "device.sync.snapshot.request";
+    public const string EnvelopeSnapshotManifest = "device.sync.snapshot.manifest";
+    public const string EnvelopeSnapshotChunk = "device.sync.snapshot.chunk";
+    public const string EnvelopeSnapshotComplete = "device.sync.snapshot.complete";
 
     public const string TopicUpsert = "topic.upsert";
     public const string TopicDelete = "topic.delete";
@@ -553,7 +579,11 @@ public static class DeviceSyncKinds
     public const string MemoryDelete = "memory.delete";
 
     public static bool IsEnvelopeKind(string? kind)
-        => kind is EnvelopeOperation or EnvelopeSnapshotRequest;
+        => kind is EnvelopeOperation
+            or EnvelopeSnapshotRequest
+            or EnvelopeSnapshotManifest
+            or EnvelopeSnapshotChunk
+            or EnvelopeSnapshotComplete;
 }
 
 public static class DeviceSyncEntityIds
@@ -618,7 +648,34 @@ public sealed record DeviceSyncBatch(
     bool IsSnapshot,
     IReadOnlyList<DeviceSyncOperation> Operations);
 
-public sealed record DeviceSyncSnapshotRequest(string RequestId, string RequestingDeviceId);
+public sealed record DeviceSyncSnapshotRequest(
+    string RequestId,
+    string RequestingDeviceId,
+    int FormatVersion = 1,
+    string? KnownSnapshotId = null,
+    IReadOnlyList<int>? MissingChunkIndexes = null);
+
+public sealed record DeviceSyncSnapshotManifest(
+    string SnapshotId,
+    string SourceDeviceId,
+    int OperationCount,
+    int ChunkCount,
+    int CompressedBytes,
+    string Sha256);
+
+public sealed record DeviceSyncSnapshotChunk(
+    string SnapshotId,
+    string SourceDeviceId,
+    int Index,
+    string Sha256,
+    byte[] Data);
+
+public sealed record DeviceSyncSnapshotComplete(
+    string SnapshotId,
+    string SourceDeviceId,
+    string TargetDeviceId,
+    int OperationCount,
+    string Sha256);
 
 [method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record DeviceSyncTopic(
@@ -1682,6 +1739,7 @@ public static class MeshHubProtocol
     // Client -> server invocations.
     public const string Authenticate = "Authenticate";
     public const string SendEnvelope = "SendEnvelope";
+    public const string SendEphemeralEnvelope = "SendEphemeralEnvelope";
     public const string SendFanout = "SendFanout";
     public const string AcknowledgeDelivery = "AcknowledgeDelivery";
     public const string RequestPendingDeliveries = "RequestPendingDeliveries";

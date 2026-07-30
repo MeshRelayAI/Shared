@@ -723,7 +723,7 @@ public sealed record QueueEnqueue(
 
 public sealed record QueueDrainRequest(
     string TargetDeviceId,
-    int MaxEntries = 64);
+    int MaxEntries = DeviceQueueProtocol.DeliveryWindow);
 
 public sealed record QueueDrainResponse(
     IReadOnlyList<QueueEntry> Entries);
@@ -737,6 +737,9 @@ public sealed record QueueEnqueueResult(
 public static class DeviceQueueProtocol
 {
     public const int MaxEntries = 500;
+    // Cosmos leases each entry through multiple fenced operations. Keep each hub invocation
+    // comfortably below SignalR and iOS background execution timeout budgets.
+    public const int DeliveryWindow = 4;
     public static readonly TimeSpan EntryTtl = TimeSpan.FromDays(7);
     public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(30);
     public const string BoundedQueueFull = "bounded_queue_full";

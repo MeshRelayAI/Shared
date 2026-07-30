@@ -13,6 +13,11 @@ namespace Mesh.Shared;
 /// requires device linking or recovery (proof of the handle's recovery key).
 /// </para>
 /// </summary>
+public static class MeshProtocol
+{
+    public const int Version = 8;
+}
+
 public record RegisterHandleRequest(
     string Handle,
     string DevicePublicKey,
@@ -23,7 +28,7 @@ public record RegisterHandleRequest(
     string? DevicePlatform = null,
     bool RemoteAgentEnabled = false,
     bool AtomicAgentDispatchEnabled = false,
-    int ProtocolVersion = 6)
+    int ProtocolVersion = MeshProtocol.Version)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentReady => RemoteAgentEnabled;
@@ -381,7 +386,7 @@ public record DeviceInfo(
     string Platform = DevicePlatforms.Unknown,
     bool RemoteAgentEnabled = false,
     bool AtomicAgentDispatchEnabled = false,
-    int ProtocolVersion = 6)
+    int ProtocolVersion = MeshProtocol.Version)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsDesktop => DevicePlatforms.IsDesktop(Platform);
@@ -651,7 +656,7 @@ public sealed record DeviceSyncBatch(
 public sealed record DeviceSyncSnapshotRequest(
     string RequestId,
     string RequestingDeviceId,
-    int FormatVersion = 1,
+    int FormatVersion = DeviceSyncSnapshotProtocol.FormatVersion,
     string? KnownSnapshotId = null,
     IReadOnlyList<int>? MissingChunkIndexes = null);
 
@@ -676,6 +681,79 @@ public sealed record DeviceSyncSnapshotComplete(
     string TargetDeviceId,
     int OperationCount,
     string Sha256);
+
+public enum HandshakeResult
+{
+    Accepted,
+    VersionMismatch
+}
+
+public sealed record HandshakeRequest(
+    int ProtocolVersion);
+
+public sealed record HandshakeResponse(
+    int ServerVersion,
+    HandshakeResult Result,
+    string? Error = null);
+
+public sealed record PresenceConfirmed(
+    string Handle,
+    string DeviceId,
+    DateTimeOffset ConnectedAt,
+    DateTimeOffset ExpiresAt,
+    string RelayInstanceId);
+
+public sealed record QueueEntry(
+    string EntryId,
+    string SourceDeviceId,
+    string TargetDeviceId,
+    string Payload,
+    DateTimeOffset EnqueuedAt,
+    DateTimeOffset ExpiresAt);
+
+public sealed record QueueAck(
+    string EntryId,
+    string TargetDeviceId);
+
+public sealed record QueueEnqueue(
+    string SourceDeviceId,
+    string TargetDeviceId,
+    string OperationId,
+    string Payload);
+
+public sealed record QueueDrainRequest(
+    string TargetDeviceId,
+    int MaxEntries = 64);
+
+public sealed record QueueDrainResponse(
+    IReadOnlyList<QueueEntry> Entries);
+
+public sealed record QueueEnqueueResult(
+    bool Accepted,
+    string EntryId,
+    string? Error = null,
+    bool Created = false);
+
+public static class DeviceQueueProtocol
+{
+    public const int MaxEntries = 500;
+    public static readonly TimeSpan EntryTtl = TimeSpan.FromDays(7);
+    public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(30);
+    public const string BoundedQueueFull = "bounded_queue_full";
+}
+
+public static class DeviceQueueEntryIdProtocol
+{
+    public static string Create(string sourceDeviceId, string targetDeviceId, string operationId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDeviceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetDeviceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+        var material = $"{sourceDeviceId}\u001f{targetDeviceId}\u001f{operationId}";
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
+    }
+}
 
 [method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record DeviceSyncTopic(
@@ -1031,10 +1109,8 @@ public static class FanoutProtocol
 public static class MessageLimits
 {
     /// <summary>
-    /// Maximum SignalR invocation size accepted during the compatibility window. Older clients can
-    /// send large inline Device Sync snapshots before receiving a structured rejection. Keep the
-    /// transport ceiling above those legacy frames so the hub can return <c>message_too_large</c>
-    /// instead of aborting the socket and causing an endless reconnect loop.
+    /// Maximum SignalR invocation size. This leaves enough headroom for protocol framing while
+    /// keeping payload enforcement at the envelope limit below.
     /// </summary>
     public const int MaxTransportMessageBytes = 12 * 1024 * 1024;
 
@@ -1738,6 +1814,9 @@ public static class MeshHubProtocol
 
     // Client -> server invocations.
     public const string Authenticate = "Authenticate";
+    public const string QueueEnqueue = "QueueEnqueue";
+    public const string QueueDrain = "QueueDrain";
+    public const string QueueAck = "QueueAck";
     public const string SendEnvelope = "SendEnvelope";
     public const string SendEphemeralEnvelope = "SendEphemeralEnvelope";
     public const string SendFanout = "SendFanout";
@@ -1746,7 +1825,9 @@ public static class MeshHubProtocol
     public const string CancelQueuedEnvelope = "CancelQueuedEnvelope";
 
     // Server -> client events.
+    public const string Handshake = "Handshake"; // payload: HandshakeResponse
     public const string Challenge = "Challenge"; // payload: nonce (string)
-    public const string Ready = "Ready";         // payload: none (auth accepted)
+    public const string PresenceConfirmed = "PresenceConfirmed"; // payload: PresenceConfirmed
+    public const string DeviceQueueAvailable = "DeviceQueueAvailable"; // payload: none
     public const string Receive = "Receive";     // payload: envelope JSON (string)
 }

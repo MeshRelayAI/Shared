@@ -212,18 +212,6 @@ public static class DeviceSyncEnvelopeIdProtocol
                 .OrderBy(operation => operation.OperationId, StringComparer.Ordinal)
                 .Select(operation => operation.OperationId)));
 
-    public static string LegacySnapshotBatchId(
-        string sourceDeviceId,
-        string targetDeviceId,
-        IReadOnlyList<DeviceSyncOperation> operations)
-        => Hash(
-            "snapshot-batch",
-            sourceDeviceId,
-            targetDeviceId,
-            string.Join("\n", operations
-                .OrderBy(operation => operation.OperationId, StringComparer.Ordinal)
-                .Select(operation => operation.OperationId)));
-
     public static string EnvelopeId(
         string kind,
         string sourceDeviceId,

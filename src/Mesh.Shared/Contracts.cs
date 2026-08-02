@@ -15,7 +15,7 @@ namespace Mesh.Shared;
 /// </summary>
 public static class MeshProtocol
 {
-    public const int Version = 8;
+    public const int Version = 9;
 }
 
 public record RegisterHandleRequest(
@@ -27,8 +27,9 @@ public record RegisterHandleRequest(
     string? DeviceName = null,
     string? DevicePlatform = null,
     bool RemoteAgentEnabled = false,
-    bool AtomicAgentDispatchEnabled = false,
-    int ProtocolVersion = MeshProtocol.Version)
+    bool AgentHostEnabled = false,
+    int ProtocolVersion = MeshProtocol.Version,
+    CustodyEntry? CustodyAuthority = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentReady => RemoteAgentEnabled;
@@ -93,7 +94,7 @@ public static class RecoveryProtocol
 /// Delete (release) a handle so its name becomes free to claim again. Authenticated: the caller
 /// signs with a device key currently registered under the handle, proving ownership. The relay
 /// verifies the key is registered and the signature is valid, then removes the handle registration
-/// (and its pending invites and offline inbox). This is what makes handle names truly reusable and
+/// (and its pending invites and offline mailbox). This is what makes handle names truly reusable and
 /// prevents stale registrations from blocking a legitimate re-creation.
 /// Signature is over <c>handle-delete|handle</c> by a registered device key.
 /// </summary>
@@ -164,7 +165,10 @@ public static class LinkProtocol
 
     public static string HashCode(string code)
         => Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(code)));
+                System.Text.Encoding.UTF8.GetBytes(code)))
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
 
     public static string Normalize(string handle)
         => handle.Trim().TrimStart('@').ToLowerInvariant();
@@ -367,12 +371,23 @@ public static class ConnectorProtocol
 }
 
 /// <summary>Public directory view of a handle (no private data).</summary>
+/// <remarks>
+/// <see cref="AuthGeneration"/> and <see cref="CustodyHead"/> are the relay-authoritative custody
+/// authority for the handle. A Protocol 9 client reads its own entry to learn the exact values it
+/// must present during the custody-bound connect handshake, and reads a peer's entry to build the
+/// replication roster (authorised device keys plus the generation the engine verifies against).
+/// They default to (0, "") so a relay that has not yet advanced custody, or an older serializer that
+/// omits them, still binds a valid record.
+/// </remarks>
 public record HandleInfo(
     string Handle,
     string? DisplayName,
     IReadOnlyList<string> DevicePublicKeys,
     bool Online,
-    DateTimeOffset RegisteredAt);
+    DateTimeOffset RegisteredAt,
+    long AuthGeneration = 0,
+    string CustodyHead = "",
+    CustodyEntry? CustodyAuthority = null);
 
 /// <summary>
 /// Public view of a single device under a handle: its stable device id, a friendly name (if the
@@ -385,7 +400,7 @@ public record DeviceInfo(
     bool Online,
     string Platform = DevicePlatforms.Unknown,
     bool RemoteAgentEnabled = false,
-    bool AtomicAgentDispatchEnabled = false,
+    bool AgentHostEnabled = false,
     int ProtocolVersion = MeshProtocol.Version)
 {
     [System.Text.Json.Serialization.JsonIgnore]
@@ -407,8 +422,8 @@ public record DeviceInfo(
     public bool AgentReady => RemoteAgentEnabled;
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool CanAnswerAtomicAgentRequests =>
-        IsDesktop && RemoteAgentEnabled && AtomicAgentDispatchEnabled;
+    public bool CanAnswerAgentHostRequests =>
+        IsDesktop && RemoteAgentEnabled && AgentHostEnabled;
 
 }
 
@@ -481,37 +496,11 @@ public static class AgentRoutingProtocol
         => $"agent-routing|set|{LinkProtocol.Normalize(handle)}|{primaryDeviceId.Trim()}|{failoverDeviceId?.Trim() ?? ""}|{expectedVersion}";
 }
 
-public static class AgentDispatchCodes
-{
-    public const string Accepted = "agent_dispatch_accepted";
-    public const string Queued = "agent_dispatch_queued";
-}
-
-public static class DurableDeliveryCodes
-{
-    public const string Delivered = "delivery_live";
-    public const string RelayQueued = "relay_queued";
-    public const string LocalQueued = "local_queued";
-}
-
-public static class AgentDispatchProtocol
-{
-    public static bool IsAtomicRequest(string? kind)
-        => string.Equals(kind, MeshKinds.AtomicAgentRequest, StringComparison.Ordinal);
-
-    public static bool IsAtomicResponse(string? kind)
-        => string.Equals(kind, MeshKinds.AtomicAgentResponse, StringComparison.Ordinal);
-}
 
 public sealed record RemoteAgentRequestPayload(string RequestId, string ThreadId, string Prompt);
 
 public sealed record RemoteAgentResponsePayload(string RequestId, string ThreadId, string Text);
 
-public sealed record RemoteAgentDispatchResult(bool Accepted, string Code, string RequestId)
-{
-    public static RemoteAgentDispatchResult Ok(string requestId) => new(true, "accepted", requestId);
-    public static RemoteAgentDispatchResult Reject(string code, string requestId = "") => new(false, code, requestId);
-}
 
 public static class RemoteAgentProtocol
 {
@@ -559,128 +548,6 @@ public static class RemoteAgentProtocol
     }
 }
 
-public static class DeviceSyncKinds
-{
-    public const string EnvelopeOperation = "device.sync.operation";
-    public const string EnvelopeSnapshotRequest = "device.sync.snapshot.request";
-    public const string EnvelopeSnapshotManifest = "device.sync.snapshot.manifest";
-    public const string EnvelopeSnapshotChunk = "device.sync.snapshot.chunk";
-    public const string EnvelopeSnapshotComplete = "device.sync.snapshot.complete";
-
-    public const string TopicUpsert = "topic.upsert";
-    public const string TopicDelete = "topic.delete";
-    public const string TopicClear = "topic.clear";
-    public const string TopicLineUpsert = "topic.line.upsert";
-    public const string TopicLineDelete = "topic.line.delete";
-    public const string ConversationUpsert = "conversation.upsert";
-    public const string ConversationDelete = "conversation.delete";
-    public const string ConversationClear = "conversation.clear";
-    public const string ConversationLineUpsert = "conversation.line.upsert";
-    public const string ContactUpsert = "contact.upsert";
-    public const string ContactDelete = "contact.delete";
-    public const string CircleUpsert = "circle.upsert";
-    public const string CircleDelete = "circle.delete";
-    public const string MemoryUpsert = "memory.upsert";
-    public const string MemoryDelete = "memory.delete";
-
-    public static bool IsEnvelopeKind(string? kind)
-        => kind is EnvelopeOperation
-            or EnvelopeSnapshotRequest
-            or EnvelopeSnapshotManifest
-            or EnvelopeSnapshotChunk
-            or EnvelopeSnapshotComplete;
-}
-
-public static class DeviceSyncEntityIds
-{
-    public static string TopicLine(string threadId, string lineId)
-    {
-        if (!TopicRunProtocol.IsValidIdentifier(threadId))
-            throw new ArgumentException("A valid thread ID is required.", nameof(threadId));
-        if (!TopicRunProtocol.IsValidIdentifier(lineId))
-            throw new ArgumentException("A valid line ID is required.", nameof(lineId));
-        // Length-prefix the thread ID because either identifier may contain separator characters.
-        return threadId.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
-               + ":" + threadId + lineId;
-    }
-
-    public static bool TryParseTopicLine(
-        string? entityId,
-        out string threadId,
-        out string lineId)
-    {
-        threadId = "";
-        lineId = "";
-        if (string.IsNullOrWhiteSpace(entityId)
-            || entityId.Length > TopicRunProtocol.MaxIdChars * 2 + 16)
-            return false;
-        var separator = entityId.IndexOf(':');
-        if (separator <= 0
-            || !int.TryParse(
-                entityId.AsSpan(0, separator),
-                System.Globalization.NumberStyles.None,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out var threadLength)
-            || !string.Equals(
-                entityId[..separator],
-                threadLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                StringComparison.Ordinal)
-            || threadLength < 1
-            || separator + 1 + threadLength >= entityId.Length)
-            return false;
-        threadId = entityId.Substring(separator + 1, threadLength);
-        lineId = entityId[(separator + 1 + threadLength)..];
-        if (TopicRunProtocol.IsValidIdentifier(threadId)
-            && TopicRunProtocol.IsValidIdentifier(lineId))
-            return true;
-        threadId = "";
-        lineId = "";
-        return false;
-    }
-}
-
-public sealed record DeviceSyncOperation(
-    string OperationId,
-    string SourceDeviceId,
-    string Kind,
-    string EntityId,
-    string Version,
-    string Payload);
-
-public sealed record DeviceSyncBatch(
-    string BatchId,
-    string SourceDeviceId,
-    bool IsSnapshot,
-    IReadOnlyList<DeviceSyncOperation> Operations);
-
-public sealed record DeviceSyncSnapshotRequest(
-    string RequestId,
-    string RequestingDeviceId,
-    int FormatVersion = DeviceSyncSnapshotProtocol.FormatVersion,
-    string? KnownSnapshotId = null,
-    IReadOnlyList<int>? MissingChunkIndexes = null);
-
-public sealed record DeviceSyncSnapshotManifest(
-    string SnapshotId,
-    string SourceDeviceId,
-    int OperationCount,
-    int ChunkCount,
-    int CompressedBytes,
-    string Sha256);
-
-public sealed record DeviceSyncSnapshotChunk(
-    string SnapshotId,
-    string SourceDeviceId,
-    int Index,
-    string Sha256,
-    byte[] Data);
-
-public sealed record DeviceSyncSnapshotComplete(
-    string SnapshotId,
-    string SourceDeviceId,
-    string TargetDeviceId,
-    int OperationCount,
-    string Sha256);
 
 public enum HandshakeResult
 {
@@ -703,247 +570,7 @@ public sealed record PresenceConfirmed(
     DateTimeOffset ExpiresAt,
     string RelayInstanceId);
 
-public sealed record QueueEntry(
-    string EntryId,
-    string SourceDeviceId,
-    string TargetDeviceId,
-    string Payload,
-    DateTimeOffset EnqueuedAt,
-    DateTimeOffset ExpiresAt);
 
-public sealed record QueueAck(
-    string EntryId,
-    string TargetDeviceId);
-
-public sealed record QueueEnqueue(
-    string SourceDeviceId,
-    string TargetDeviceId,
-    string OperationId,
-    string Payload);
-
-public sealed record QueueDrainRequest(
-    string TargetDeviceId,
-    int MaxEntries = DeviceQueueProtocol.DeliveryWindow);
-
-public sealed record QueueDrainResponse(
-    IReadOnlyList<QueueEntry> Entries);
-
-public sealed record QueueEnqueueResult(
-    bool Accepted,
-    string EntryId,
-    string? Error = null,
-    bool Created = false);
-
-public static class DeviceQueueProtocol
-{
-    public const int MaxEntries = 500;
-    // Cosmos leases each entry through multiple fenced operations. Keep each hub invocation
-    // comfortably below SignalR and iOS background execution timeout budgets.
-    public const int DeliveryWindow = 4;
-    public static readonly TimeSpan EntryTtl = TimeSpan.FromDays(7);
-    public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(30);
-    public const string BoundedQueueFull = "bounded_queue_full";
-}
-
-public static class DeviceQueueEntryIdProtocol
-{
-    public static string Create(string sourceDeviceId, string targetDeviceId, string operationId)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDeviceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetDeviceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
-        var material = $"{sourceDeviceId}\u001f{targetDeviceId}\u001f{operationId}";
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
-    }
-}
-
-[method: System.Text.Json.Serialization.JsonConstructor]
-public sealed record DeviceSyncTopic(
-    string Id,
-    string Title,
-    DateTimeOffset CreatedAt,
-    int SortOrder,
-    string? ExecutionDeviceId = null,
-    string? ExecutionDeviceName = null,
-    string? ExecutionDevicePlatform = null,
-    DateTimeOffset? LastActivityAt = null,
-    bool IsPinned = false,
-    DateTimeOffset? ExecutionAt = null,
-    string? ExecutionRunId = null,
-    bool HasExecutionMetadata = false)
-{
-    public DeviceSyncTopic(
-        string id,
-        string title,
-        DateTimeOffset createdAt,
-        int sortOrder,
-        string? executionDeviceId,
-        DateTimeOffset? executionAt)
-        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
-            null, false, executionAt)
-    {
-    }
-
-    public DeviceSyncTopic(
-        string id,
-        string title,
-        DateTimeOffset createdAt,
-        int sortOrder,
-        string? executionDeviceId,
-        DateTimeOffset? executionAt,
-        string? executionRunId)
-        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
-            null, false, executionAt, executionRunId)
-    {
-    }
-
-    public DeviceSyncTopic(
-        string id,
-        string title,
-        DateTimeOffset createdAt,
-        int sortOrder,
-        string? executionDeviceId,
-        DateTimeOffset? executionAt,
-        string? executionRunId,
-        DateTimeOffset? lastActivityAt)
-        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
-            lastActivityAt, false, executionAt, executionRunId)
-    {
-    }
-
-    public DeviceSyncTopic(
-        string id,
-        string title,
-        DateTimeOffset createdAt,
-        int sortOrder,
-        string? executionDeviceId,
-        DateTimeOffset? executionAt,
-        string? executionRunId,
-        DateTimeOffset? lastActivityAt,
-        bool isPinned)
-        : this(id, title, createdAt, sortOrder, executionDeviceId, null, null,
-            lastActivityAt, isPinned, executionAt, executionRunId)
-    {
-    }
-
-    public DeviceSyncTopic(
-        string id,
-        string title,
-        DateTimeOffset createdAt,
-        int sortOrder,
-        string? executionDeviceId,
-        DateTimeOffset? executionAt,
-        string? executionRunId,
-        DateTimeOffset? lastActivityAt,
-        bool isPinned,
-        bool hasExecutionMetadata)
-        : this(
-            id, title, createdAt, sortOrder, executionDeviceId, null, null,
-            lastActivityAt, isPinned, executionAt, executionRunId, hasExecutionMetadata)
-    {
-    }
-
-    public void Deconstruct(
-        out string id,
-        out string title,
-        out DateTimeOffset createdAt,
-        out int sortOrder)
-        => (id, title, createdAt, sortOrder) = (Id, Title, CreatedAt, SortOrder);
-}
-
-public sealed record DeviceSyncConversation(
-    string Handle,
-    int SortOrder,
-    string? ServiceId,
-    string? ServiceName,
-    string? ProviderHandle,
-    string? GroupId,
-    string? GroupName,
-    string? GroupOwnerHandle,
-    IReadOnlyList<string> GroupMembers,
-    int GroupVersion,
-    DateTimeOffset? CreatedAt = null,
-    DateTimeOffset? LastActivityAt = null,
-    bool IsPinned = false,
-    bool HasActivityMetadata = false)
-{
-    public void Deconstruct(
-        out string handle,
-        out int sortOrder,
-        out string? serviceId,
-        out string? serviceName,
-        out string? providerHandle,
-        out string? groupId,
-        out string? groupName,
-        out string? groupOwnerHandle,
-        out IReadOnlyList<string> groupMembers,
-        out int groupVersion)
-        => (handle, sortOrder, serviceId, serviceName, providerHandle, groupId, groupName,
-                groupOwnerHandle, groupMembers, groupVersion)
-            = (Handle, SortOrder, ServiceId, ServiceName, ProviderHandle, GroupId, GroupName,
-                GroupOwnerHandle, GroupMembers, GroupVersion);
-}
-
-public sealed record DeviceSyncContact(
-    string Handle,
-    string? DisplayName,
-    IReadOnlyList<string> Circles,
-    bool Allowed,
-    IReadOnlyList<string> SigningKeys,
-    bool KeyChanged,
-    bool Muted,
-    bool Blocked);
-
-public sealed record DeviceSyncCircle(
-    string Name,
-    bool RequireApproval,
-    IReadOnlyList<DeviceSyncCircleRename>? Renames = null);
-
-public sealed record DeviceSyncCircleRename(
-    string PreviousName,
-    string DeleteVersion);
-
-public sealed record DeviceSyncMemory(
-    string Id,
-    string Title,
-    string Content,
-    string Category,
-    string Origin,
-    double Importance,
-    double Confidence,
-    double Stability,
-    int ReinforcementCount,
-    string? SourceThreadId,
-    string? SourceLineId,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt,
-    DateTimeOffset LastReinforcedAt);
-
-public sealed record DeviceSyncLine(
-    string Id,
-    string Role,
-    string Text,
-    string Via,
-    string Status,
-    DateTimeOffset At,
-    string? SenderHandle,
-    bool Internal,
-    string? Reasoning,
-    string? ReplyToLineId = null,
-    string? ModelId = null);
-
-public static class DeviceSyncVersion
-{
-    public static string Create(DateTimeOffset at, string sourceDeviceId, string operationId)
-        => $"{at.UtcDateTime.Ticks:D19}|{sourceDeviceId}|{operationId}";
-
-    public static int Compare(string? left, string? right)
-        => string.Compare(left ?? "", right ?? "", StringComparison.Ordinal);
-
-    public static bool IsNewer(string candidate, string? current)
-        => Compare(candidate, current) > 0;
-}
 
 /// <summary>
 /// A request to the relay-hosted free model. The relay holds the upstream model key
@@ -1042,16 +669,13 @@ public record MeshEnvelope(
     string? FromDevice = null,
     string? ToDevice = null,
     string? PushHint = null,
-    string? AgentRequestId = null,
-    string? AgentDispatchToken = null,
-    string? RelayDeliveryId = null,
-    bool RelayDeviceScoped = false)
+    string? AgentRequestId = null)
 {
     public static MeshEnvelope Create(string from, string to, string kind, string body, string? signature = null,
         string? fromDevice = null, string? toDevice = null, string? pushHint = null,
-        string? agentRequestId = null, string? agentDispatchToken = null, string? id = null)
+        string? agentRequestId = null, string? id = null)
         => new(id ?? Guid.NewGuid().ToString("n"), from, to, kind, body, signature, DateTimeOffset.UtcNow,
-            fromDevice, toDevice, pushHint, agentRequestId, agentDispatchToken);
+            fromDevice, toDevice, pushHint, agentRequestId);
 }
 
 /// <summary>
@@ -1079,15 +703,10 @@ public sealed record MeshSendResult(
     string? QueueId = null)
 {
     public static MeshSendResult Ok(int recipientCount = 1) => new(true, "accepted", 0, recipientCount);
-    public static MeshSendResult Queued(string queueId)
-        => new(true, DurableDeliveryCodes.RelayQueued, 0, 1, queueId);
-    public static MeshSendResult Delivered(string queueId)
-        => new(true, DurableDeliveryCodes.Delivered, 0, 1, queueId);
     public static MeshSendResult Reject(string code, int retryAfterMs = 0)
         => new(false, code, Math.Max(0, retryAfterMs), 0);
 }
 
-public sealed record CancelQueuedEnvelopeRequest(string EnvelopeId, string TargetDeviceId);
 
 /// <summary>Batch request for public device encryption keys.</summary>
 public sealed record HandleKeysBatchRequest(IReadOnlyList<string> Handles);
@@ -1205,20 +824,6 @@ public static class MeshKinds
     public const string TopicAttachmentChunk = "topic.attachment.chunk";
 }
 
-/// <summary>Envelope kinds that must wait for a foreground-capable client connection.</summary>
-public static class BackgroundSyncProtocol
-{
-    public static bool RequiresForeground(string kind) => kind is
-        MeshKinds.Chat
-        or MeshKinds.AgentRequest
-        or MeshKinds.AtomicAgentRequest
-        or MeshKinds.ServiceRequest
-        or MeshKinds.TopicRunRequest
-        or MeshKinds.TopicRunCancel
-        or MeshKinds.AttachmentChunk
-        or MeshKinds.TopicAttachmentChunk
-        or DeviceSyncKinds.EnvelopeSnapshotRequest;
-}
 
 [System.Text.Json.Serialization.JsonConverter(
     typeof(TopicRunPhaseJsonConverter))]
@@ -1817,20 +1422,13 @@ public static class MeshHubProtocol
 
     // Client -> server invocations.
     public const string Authenticate = "Authenticate";
-    public const string QueueEnqueue = "QueueEnqueue";
-    public const string QueueDrain = "QueueDrain";
-    public const string QueueAck = "QueueAck";
     public const string SendEnvelope = "SendEnvelope";
     public const string SendEphemeralEnvelope = "SendEphemeralEnvelope";
     public const string SendFanout = "SendFanout";
-    public const string AcknowledgeDelivery = "AcknowledgeDelivery";
-    public const string RequestPendingDeliveries = "RequestPendingDeliveries";
-    public const string CancelQueuedEnvelope = "CancelQueuedEnvelope";
 
     // Server -> client events.
     public const string Handshake = "Handshake"; // payload: HandshakeResponse
     public const string Challenge = "Challenge"; // payload: nonce (string)
     public const string PresenceConfirmed = "PresenceConfirmed"; // payload: PresenceConfirmed
-    public const string DeviceQueueAvailable = "DeviceQueueAvailable"; // payload: none
     public const string Receive = "Receive";     // payload: envelope JSON (string)
 }

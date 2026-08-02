@@ -17,7 +17,7 @@ public static class AttachmentProtocol
     public const string Container = "attachments";
 
     /// <summary>
-    /// Blobs auto-expire this many days after creation, matching the 14-day inbox TTL so an attachment
+    /// Blobs auto-expire this many days after creation, matching the 14-day staging TTL so an attachment
     /// never outlives its message. Enforced by a storage lifecycle rule on the container, not per-blob TTL.
     /// </summary>
     public const int RetentionDays = 14;

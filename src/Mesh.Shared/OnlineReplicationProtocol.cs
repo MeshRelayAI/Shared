@@ -242,6 +242,111 @@ public static class OnlineReplicationProtocol
         return true;
     }
 
+    /// <summary>The canonical statement signed by a snapshot-origin device.</summary>
+    public static string SnapshotManifestCanonical(ReplicationSnapshotManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        var fields = new List<string?>
+        {
+            "mesh.snapshot",
+            CanonicalVersion.ToString(CultureInfo.InvariantCulture),
+            manifest.SnapshotId,
+            manifest.ReceiverDeviceId,
+            manifest.OriginDeviceId,
+            manifest.LogEpoch,
+            manifest.BaselineFrom.ToString(CultureInfo.InvariantCulture),
+            manifest.SnapshotThrough.ToString(CultureInfo.InvariantCulture),
+            manifest.StateHash,
+            manifest.AuthGeneration.ToString(CultureInfo.InvariantCulture)
+        };
+        var coverage = (manifest.Coverage ?? Array.Empty<ReplicationSnapshotCoverage>())
+            .OrderBy(item => item.OriginDeviceId, StringComparer.Ordinal)
+            .ThenBy(item => item.LogEpoch, StringComparer.Ordinal)
+            .ToArray();
+        fields.Add(coverage.Length.ToString(CultureInfo.InvariantCulture));
+        foreach (var item in coverage)
+        {
+            fields.Add(item.OriginDeviceId);
+            fields.Add(item.LogEpoch);
+            fields.Add(item.ThroughSeq.ToString(CultureInfo.InvariantCulture));
+        }
+        return Canonical(fields.ToArray());
+    }
+
+    /// <summary>Deterministic hash of a snapshot manifest's signed canonical statement.</summary>
+    public static string ComputeSnapshotManifestHash(ReplicationSnapshotManifest manifest)
+        => HashText(SnapshotManifestCanonical(manifest));
+
+    /// <summary>Creates a receiver-bound, signed snapshot baseline manifest.</summary>
+    public static ReplicationSnapshotManifest CreateSnapshotManifest(
+        string snapshotId,
+        string receiverDeviceId,
+        string originDeviceId,
+        string logEpoch,
+        ulong baselineFrom,
+        ulong snapshotThrough,
+        string stateHash,
+        long authGeneration,
+        string signerPrivateKeyB64,
+        IReadOnlyList<ReplicationSnapshotCoverage>? coverage = null)
+    {
+        var unsigned = new ReplicationSnapshotManifest(
+            snapshotId,
+            receiverDeviceId,
+            originDeviceId,
+            logEpoch,
+            baselineFrom,
+            snapshotThrough,
+            stateHash,
+            authGeneration,
+            "",
+            coverage?.ToArray() ?? Array.Empty<ReplicationSnapshotCoverage>());
+        return unsigned with { Signature = Sign(signerPrivateKeyB64, SnapshotManifestCanonical(unsigned)) };
+    }
+
+    /// <summary>Structural validation for a signed snapshot baseline.</summary>
+    public static bool ValidateSnapshotManifestShape(ReplicationSnapshotManifest manifest, out string error)
+    {
+        error = "";
+        if (manifest is null) { error = "Snapshot manifest is null."; return false; }
+        if (string.IsNullOrWhiteSpace(manifest.SnapshotId)) { error = "SnapshotId is required."; return false; }
+        if (string.IsNullOrWhiteSpace(manifest.ReceiverDeviceId)) { error = "ReceiverDeviceId is required."; return false; }
+        if (string.IsNullOrWhiteSpace(manifest.OriginDeviceId)) { error = "OriginDeviceId is required."; return false; }
+        if (string.IsNullOrWhiteSpace(manifest.LogEpoch)) { error = "LogEpoch is required."; return false; }
+        if (manifest.BaselineFrom == 0 || manifest.BaselineFrom > long.MaxValue)
+        { error = "BaselineFrom is outside the storable range."; return false; }
+        if (manifest.SnapshotThrough > long.MaxValue) { error = "SnapshotThrough exceeds the storable range."; return false; }
+        var emptySnapshot = manifest.SnapshotThrough + 1 == manifest.BaselineFrom;
+        if (manifest.SnapshotThrough < manifest.BaselineFrom && !emptySnapshot)
+        { error = "SnapshotThrough precedes BaselineFrom by more than one position."; return false; }
+        if (!IsHex(manifest.StateHash, OnlineReplicationLimits.HashHexLength)) { error = "StateHash is malformed."; return false; }
+        if (manifest.AuthGeneration < 0) { error = "AuthGeneration must be non-negative."; return false; }
+        var coverage = manifest.Coverage ?? Array.Empty<ReplicationSnapshotCoverage>();
+        if (coverage.Count > OnlineReplicationLimits.MaxSnapshotCoverageOrigins)
+        { error = "Snapshot coverage exceeds the tracked-origin limit."; return false; }
+        var coveredOrigins = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in coverage)
+        {
+            if (item is null || string.IsNullOrWhiteSpace(item.OriginDeviceId))
+            { error = "Snapshot coverage origin is required."; return false; }
+            if (string.IsNullOrWhiteSpace(item.LogEpoch))
+            { error = "Snapshot coverage epoch is required."; return false; }
+            if (item.ThroughSeq == 0 || item.ThroughSeq > long.MaxValue)
+            { error = "Snapshot coverage position is outside the storable range."; return false; }
+            if (string.Equals(item.OriginDeviceId, manifest.OriginDeviceId, StringComparison.Ordinal))
+            { error = "Snapshot coverage must not repeat the manifest origin."; return false; }
+            if (!coveredOrigins.Add(item.OriginDeviceId))
+            { error = "Snapshot coverage contains a duplicate origin."; return false; }
+        }
+        if (!IsSignatureShape(manifest.Signature)) { error = "Snapshot signature is malformed."; return false; }
+        return true;
+    }
+
+    /// <summary>Verifies a snapshot manifest against its origin device key.</summary>
+    public static bool VerifySnapshotManifest(ReplicationSnapshotManifest manifest, string signerPublicKeyB64)
+        => ValidateSnapshotManifestShape(manifest, out _)
+           && MeshCrypto.Verify(signerPublicKeyB64, SnapshotManifestCanonical(manifest), manifest.Signature);
+
     /// <summary>Validates an offer's ordering and bounds.</summary>
     public static bool ValidateOffer(ReplicationOffer offer, out string error)
     {
@@ -249,9 +354,24 @@ public static class OnlineReplicationProtocol
         if (offer is null) { error = "Offer is null."; return false; }
         if (string.IsNullOrWhiteSpace(offer.OriginDeviceId)) { error = "OriginDeviceId is required."; return false; }
         if (string.IsNullOrWhiteSpace(offer.LogEpoch)) { error = "LogEpoch is required."; return false; }
+        var emptySnapshot = offer.Snapshot is { } candidate
+            && candidate.SnapshotThrough + 1 == candidate.BaselineFrom;
         if (offer.AvailableThrough != 0 && offer.AvailableFrom == 0) { error = "AvailableFrom must start at 1."; return false; }
-        if (offer.AvailableThrough < offer.AvailableFrom) { error = "AvailableThrough precedes AvailableFrom."; return false; }
+        if (offer.AvailableThrough < offer.AvailableFrom
+            && !(emptySnapshot && offer.AvailableThrough + 1 == offer.AvailableFrom))
+        { error = "AvailableThrough precedes AvailableFrom."; return false; }
         if (offer.AvailableThrough > long.MaxValue) { error = "Offer exceeds the storable range."; return false; }
+        if (offer.Snapshot is { } snapshot)
+        {
+            if (!ValidateSnapshotManifestShape(snapshot, out error)) return false;
+            if (!string.Equals(snapshot.OriginDeviceId, offer.OriginDeviceId, StringComparison.Ordinal)
+                || !string.Equals(snapshot.LogEpoch, offer.LogEpoch, StringComparison.Ordinal))
+            { error = "Snapshot origin does not match the offer."; return false; }
+            if (snapshot.BaselineFrom != offer.AvailableFrom)
+            { error = "Snapshot baseline does not match AvailableFrom."; return false; }
+            if (snapshot.SnapshotThrough > offer.AvailableThrough)
+            { error = "SnapshotThrough exceeds AvailableThrough."; return false; }
+        }
         return true;
     }
 
@@ -453,6 +573,24 @@ public static class OnlineReplicationProtocol
             batchHash);
     }
 
+    /// <summary>Deterministic hash of the exact ordered event range represented by a snapshot manifest.</summary>
+    public static string ComputeSnapshotStateHash(IReadOnlyList<ReplicationEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        var fields = new List<string?>
+        {
+            "mesh.snapshot-state",
+            CanonicalVersion.ToString(CultureInfo.InvariantCulture),
+            events.Count.ToString(CultureInfo.InvariantCulture)
+        };
+        foreach (var e in events)
+        {
+            fields.Add(e.Seq.ToString(CultureInfo.InvariantCulture));
+            fields.Add(e.EventId);
+        }
+        return HashText(Canonical(fields.ToArray()));
+    }
+
     /// <summary>Deterministic hash of a batch's ordered event ids.</summary>
     public static string ComputeBatchHash(ReplicationBatch batch)
     {
@@ -489,7 +627,7 @@ public static class OnlineReplicationProtocol
     public static bool VerifyReceipt(PersistenceReceipt receipt, string receiverPublicKeyB64)
     {
         if (receipt is null) return false;
-        if (receipt.ThroughSeq == 0 || receipt.ThroughSeq > long.MaxValue) return false;
+        if (receipt.ThroughSeq > long.MaxValue) return false;
         if (!IsHex(receipt.CursorHash, OnlineReplicationLimits.HashHexLength)) return false;
         if (!IsHex(receipt.BatchHash, OnlineReplicationLimits.HashHexLength)) return false;
         if (!IsSignatureShape(receipt.Signature)) return false;

@@ -36,6 +36,9 @@ public static class OnlineReplicationLimits
     /// <summary>Maximum number of distinct origin logs a single replica tracks concurrently.</summary>
     public const int MaxTrackedOrigins = 64;
 
+    /// <summary>Maximum number of origin baselines attested by one compact snapshot.</summary>
+    public const int MaxSnapshotCoverageOrigins = MaxTrackedOrigins;
+
     /// <summary>Length, in hex characters, of a SHA-256 identifier or hash.</summary>
     public const int HashHexLength = 64;
 }
@@ -82,6 +85,8 @@ public static class OnlineRelaySendCodes
     public const string Delivered = "delivered";
     public const string NotOnline = "not_online";
     public const string TargetDeviceUnknown = "target_device_unknown";
+    public const string TargetUnavailable = "target_unavailable";
+    public const string DeliveryFailed = "delivery_failed";
     public const string RateLimited = "rate_limited";
     public const string TooLarge = "too_large";
     public const string DeviceRevoked = "device_revoked";
@@ -90,6 +95,26 @@ public static class OnlineRelaySendCodes
         => code is Delivered or NotOnline or TargetDeviceUnknown
             or RateLimited or TooLarge or DeviceRevoked;
 }
+/// <summary>Authenticated request to wake one device without attaching an application payload.</summary>
+public sealed record OnlineWakeRequest(
+    string ToHandle,
+    string ToDevice,
+    string WakeId,
+    bool NotificationWorthy = false);
+
+public sealed record OnlineWakeResult(bool Accepted, string Code, int? RetryAfterMs = null);
+
+public static class OnlineWakeCodes
+{
+    public const string Accepted = "accepted";
+    public const string TargetDeviceUnknown = "target_device_unknown";
+    public const string TargetUnavailable = "target_unavailable";
+    public const string DeliveryFailed = "delivery_failed";
+    public const string RateLimited = "rate_limited";
+    public const string DeviceRevoked = "device_revoked";
+    public const string Invalid = "invalid";
+}
+
 
 /// <summary>Relay hub method names used for online-only forwarding and presence.</summary>
 public static class OnlineRelayMethods
@@ -102,6 +127,12 @@ public static class OnlineRelayMethods
 }
 
 /// <summary>Push urgency classes carried on a frame so the relay can pick a wake strategy.</summary>
+public enum PushWakeMode
+{
+    SyncOnly,
+    AlertAndSync
+}
+
 public static class OnlinePushClasses
 {
     public const string Silent = "silent";
@@ -231,12 +262,32 @@ public sealed record ReplicationCursorEntry(
     ulong Contiguous,
     byte[] AheadBits);
 
+/// <summary>An origin position whose current state is represented by a sibling snapshot.</summary>
+public sealed record ReplicationSnapshotCoverage(
+    string OriginDeviceId,
+    string LogEpoch,
+    ulong ThroughSeq);
+
+/// <summary>A signed, receiver-specific baseline for a complete sibling snapshot.</summary>
+public sealed record ReplicationSnapshotManifest(
+    string SnapshotId,
+    string ReceiverDeviceId,
+    string OriginDeviceId,
+    string LogEpoch,
+    ulong BaselineFrom,
+    ulong SnapshotThrough,
+    string StateHash,
+    long AuthGeneration,
+    string Signature,
+    IReadOnlyList<ReplicationSnapshotCoverage>? Coverage = null);
+
 /// <summary>An offer of the available sequence span in an origin log.</summary>
 public sealed record ReplicationOffer(
     string OriginDeviceId,
     string LogEpoch,
     ulong AvailableFrom,
-    ulong AvailableThrough);
+    ulong AvailableThrough,
+    ReplicationSnapshotManifest? Snapshot = null);
 
 /// <summary>An inclusive sequence range.</summary>
 public sealed record ReplicationRange(

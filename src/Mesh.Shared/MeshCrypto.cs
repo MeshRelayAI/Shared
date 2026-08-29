@@ -36,6 +36,36 @@ public static class MeshCrypto
         => Convert.ToBase64String(RandomNumberGenerator.GetBytes(24));
 }
 
+public enum MessageDecryptOutcome
+{
+    Success = 0,
+    MissingRecipientSlot = 1,
+    AuthenticationFailed = 2,
+    Malformed = 3,
+}
+
+public sealed record MessageDecryptResult
+{
+    public MessageDecryptResult(
+        MessageDecryptOutcome outcome,
+        string? plaintext = null)
+    {
+        Outcome = outcome;
+        Plaintext = plaintext;
+    }
+
+    public MessageDecryptOutcome Outcome { get; }
+    public string? Plaintext { get; }
+    public bool IsSuccess => Outcome == MessageDecryptOutcome.Success;
+
+    // Preserve source compatibility for callers that only need success/failure.
+    public void Deconstruct(out bool ok, out string? plaintext)
+    {
+        ok = IsSuccess;
+        plaintext = Plaintext;
+    }
+}
+
 /// <summary>
 /// End-to-end message encryption for Mesh. The relay only ever sees ciphertext: the
 /// encrypted payload is carried inside the opaque envelope body, so no relay change is
@@ -131,31 +161,79 @@ public static class MessageCrypto
     }
 
     /// <summary>
-    /// Attempts to decrypt a body with this device's key pair. Returns (true, plaintext) on
-    /// success; (false, null) if the body is not encrypted, is not addressed to this device,
-    /// or fails authentication.
+    /// Attempts to decrypt a body with this device's key pair while preserving the distinction
+    /// between an immutable event that was not addressed to this device and a payload that failed
+    /// authentication or is structurally malformed.
     /// </summary>
-    public static (bool ok, string? plaintext) TryDecrypt(string? body, string myPrivateKeyB64, string myPublicKeyB64)
+    public static MessageDecryptResult TryDecrypt(
+        string? body,
+        string myPrivateKeyB64,
+        string myPublicKeyB64)
     {
-        if (!IsEncrypted(body)) return (false, null);
+        if (string.IsNullOrWhiteSpace(body) || body[0] != '{')
+            return new(MessageDecryptOutcome.Malformed);
+
+        EncPayload? p;
         try
         {
-            var p = JsonSerializer.Deserialize<EncPayload>(body!, PayloadJson);
-            if (p is null || p.Keys is null) return (false, null);
-            if (!p.Keys.TryGetValue(DeviceId(myPublicKeyB64), out var wk)) return (false, null);
+            p = JsonSerializer.Deserialize<EncPayload>(body, PayloadJson);
+            if (p is null
+                || p.V != 1
+                || p.Alg != Alg
+                || string.IsNullOrWhiteSpace(p.Epk)
+                || string.IsNullOrWhiteSpace(p.Iv)
+                || string.IsNullOrWhiteSpace(p.Ct)
+                || string.IsNullOrWhiteSpace(p.Tag)
+                || p.Keys is null)
+                return new(MessageDecryptOutcome.Malformed);
+        }
+        catch (JsonException)
+        {
+            return new(MessageDecryptOutcome.Malformed);
+        }
 
+        if (!p.Keys.TryGetValue(DeviceId(myPublicKeyB64), out var wk))
+            return new(MessageDecryptOutcome.MissingRecipientSlot);
+        if (wk is null
+            || string.IsNullOrWhiteSpace(wk.Iv)
+            || string.IsNullOrWhiteSpace(wk.Wrap)
+            || string.IsNullOrWhiteSpace(wk.Tag))
+            return new(MessageDecryptOutcome.Malformed);
+
+        byte[]? contentKey = null;
+        try
+        {
             using var mine = ECDiffieHellman.Create();
             mine.ImportPkcs8PrivateKey(Convert.FromBase64String(myPrivateKeyB64), out _);
             using var eph = ECDiffieHellman.Create();
             eph.ImportSubjectPublicKeyInfo(Convert.FromBase64String(p.Epk), out _);
 
             var kek = mine.DeriveKeyFromHash(eph.PublicKey, HashAlgorithmName.SHA256);
-            var contentKey = AesGcmDecrypt(kek, FromB64(wk.Iv), FromB64(wk.Wrap), FromB64(wk.Tag));
+            contentKey = AesGcmDecrypt(kek, FromB64(wk.Iv), FromB64(wk.Wrap), FromB64(wk.Tag));
             var plain = AesGcmDecrypt(contentKey, FromB64(p.Iv), FromB64(p.Ct), FromB64(p.Tag));
-            CryptographicOperations.ZeroMemory(contentKey);
-            return (true, Encoding.UTF8.GetString(plain));
+            return new(MessageDecryptOutcome.Success, Encoding.UTF8.GetString(plain));
         }
-        catch { return (false, null); }
+        catch (AuthenticationTagMismatchException)
+        {
+            return new(MessageDecryptOutcome.AuthenticationFailed);
+        }
+        catch (FormatException)
+        {
+            return new(MessageDecryptOutcome.Malformed);
+        }
+        catch (ArgumentException)
+        {
+            return new(MessageDecryptOutcome.Malformed);
+        }
+        catch (CryptographicException)
+        {
+            return new(MessageDecryptOutcome.Malformed);
+        }
+        finally
+        {
+            if (contentKey is not null)
+                CryptographicOperations.ZeroMemory(contentKey);
+        }
     }
 
     /// <summary>Stable short id for a device public key (matches the relay's device-id scheme).</summary>

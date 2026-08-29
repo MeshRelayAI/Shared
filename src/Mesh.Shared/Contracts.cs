@@ -909,6 +909,13 @@ public sealed record TopicRunStep(
     string? Result = null,
     string? ToolName = null);
 
+public sealed record TopicRunResultPayload(
+    string LineId,
+    string Text,
+    DateTimeOffset At,
+    string? ModelId = null,
+    string? Reasoning = null);
+
 public sealed record TopicRunUpdatePayload(
     string RunId,
     string ThreadId,
@@ -929,7 +936,10 @@ public sealed record TopicRunUpdatePayload(
     string? Delta = null,
     // Identifies the user line represented by this run. Queue lifecycle updates use it to keep the
     // transient "queued" subtitle attached to the right line on the submitting or executing device.
-    string? TriggerLineId = null);
+    string? TriggerLineId = null,
+    // A terminal completed update carries the committed result so control delivery and Protocol 9
+    // replication can race without losing or duplicating the answer.
+    TopicRunResultPayload? Result = null);
 
 public sealed record AttachmentChunkPayload(
     string RunId,
@@ -1029,6 +1039,7 @@ public static class TopicRunProtocol
                 || !ValidSteps(p.Steps)
                 || p.TriggerLineId is not null
                    && !ValidId(p.TriggerLineId)
+                || !ValidResult(p.Result, p.Phase)
                 || !ValidDelta(p.Delta, p.DeltaKind, p.DeltaSeq))
                 return false;
             result = p;
@@ -1092,6 +1103,16 @@ public static class TopicRunProtocol
 
     private static bool ValidOptionalText(string? value)
         => value is null || value.Length <= MaxTextChars;
+
+    private static bool ValidResult(TopicRunResultPayload? result, TopicRunPhase phase)
+        => result is null
+           || phase == TopicRunPhase.Completed
+           && ValidId(result.LineId)
+           && result.Text is not null
+           && result.Text.Length <= MaxTextChars
+           && result.At != default
+           && ValidOptionalText(result.ModelId)
+           && ValidOptionalText(result.Reasoning);
 
     private static bool ValidAttachments(
         IReadOnlyList<TopicRunAttachment>? attachments,

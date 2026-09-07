@@ -411,19 +411,21 @@ public record DeviceInfo(
 
     /// <summary>
     /// True when this device may host a remote agent turn for another of the owner's devices: it
-    /// advertised the capability (ready model, opted in) and runs on a desktop platform. Mobile devices
-    /// run their own chats locally but cannot host a turn for another device, so they are never eligible
-    /// remote hosts. The relay clamps to this at registration and clients apply the same rule.
+    /// speaks the current protocol, advertises both remote-agent readiness and the agent-host surface,
+    /// and runs on a desktop platform. This says nothing about local execution; mobile devices run
+    /// their own chats locally but are never remote hosts.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool CanHostRemoteTurn => DevicePlatforms.CanHostRemoteAgent(RemoteAgentEnabled, Platform);
+    public bool CanHostRemoteTurn =>
+        ProtocolVersion >= MeshProtocol.Version
+        && DevicePlatforms.CanHostRemoteAgent(RemoteAgentEnabled, Platform)
+        && AgentHostEnabled;
 
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentReady => RemoteAgentEnabled;
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool CanAnswerAgentHostRequests =>
-        IsDesktop && RemoteAgentEnabled && AgentHostEnabled;
+    public bool CanAnswerAgentHostRequests => CanHostRemoteTurn;
 
 }
 

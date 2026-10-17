@@ -895,7 +895,10 @@ public sealed record TopicRunRequestPayload(
 
 public sealed record TopicRunCancelPayload(
     string RunId,
-    string ThreadId);
+    string ThreadId,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? TriggerLineId = null);
 
 public sealed record TopicRunSubtask(
     string Id,
@@ -1058,7 +1061,8 @@ public static class TopicRunProtocol
         try
         {
             var p = JsonSerializer.Deserialize<TopicRunCancelPayload>(body!, Json);
-            if (p is null || !ValidId(p.RunId) || !ValidId(p.ThreadId)) return false;
+            if (p is null || !ValidId(p.RunId) || !ValidId(p.ThreadId)
+                || p.TriggerLineId is not null && !ValidId(p.TriggerLineId)) return false;
             result = p;
             return true;
         }

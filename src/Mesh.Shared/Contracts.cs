@@ -891,7 +891,13 @@ public sealed record TopicRunRequestPayload(
     string? WidgetId = null,
     string? WidgetContext = null,
     IReadOnlyList<TopicRunAttachment>? Attachments = null,
-    IReadOnlyList<string>? AttachmentIds = null);
+    IReadOnlyList<string>? AttachmentIds = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool NextBestAction = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool ContextCheck = false);
 
 public sealed record TopicRunCancelPayload(
     string RunId,

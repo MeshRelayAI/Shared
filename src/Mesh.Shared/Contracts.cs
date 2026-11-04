@@ -903,7 +903,10 @@ public sealed record TopicRunRequestPayload(
     string? ThreadTitle = null,
     [property: System.Text.Json.Serialization.JsonIgnore(
         Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? ThreadTitleVersion = null);
+    string? ThreadTitleVersion = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? ReplyToLineId = null);
 
 public sealed record TopicRunCancelPayload(
     string RunId,
@@ -1026,6 +1029,7 @@ public static class TopicRunProtocol
                    && (p.WidgetContext.Length == 0
                        || p.WidgetContext.Length > MaxWidgetContextChars)
                 || !ValidAttachments(p.Attachments, p.AttachmentIds)
+                || (p.ReplyToLineId is not null && !ValidId(p.ReplyToLineId))
                 || (p.ThreadTitle is null) != (p.ThreadTitleVersion is null))
                 return false;
             result = p;

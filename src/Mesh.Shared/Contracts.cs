@@ -29,7 +29,9 @@ public record RegisterHandleRequest(
     bool RemoteAgentEnabled = false,
     bool AgentHostEnabled = false,
     int ProtocolVersion = MeshProtocol.Version,
-    CustodyEntry? CustodyAuthority = null)
+    CustodyEntry? CustodyAuthority = null,
+    int ContextSelectionVersion = 0,
+    string? ContextSelectionSignature = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentReady => RemoteAgentEnabled;
@@ -401,7 +403,8 @@ public record DeviceInfo(
     string Platform = DevicePlatforms.Unknown,
     bool RemoteAgentEnabled = false,
     bool AgentHostEnabled = false,
-    int ProtocolVersion = MeshProtocol.Version)
+    int ProtocolVersion = MeshProtocol.Version,
+    int ContextSelectionVersion = 0)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsDesktop => DevicePlatforms.IsDesktop(Platform);
@@ -909,7 +912,10 @@ public sealed record TopicRunRequestPayload(
     string? ThreadTitleVersion = null,
     [property: System.Text.Json.Serialization.JsonIgnore(
         Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? ReplyToLineId = null);
+    string? ReplyToLineId = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? ContextSelectionRevision = null);
 
 public sealed record TopicRunCancelPayload(
     string RunId,

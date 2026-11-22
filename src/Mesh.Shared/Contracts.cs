@@ -900,9 +900,6 @@ public sealed record TopicRunRequestPayload(
     bool NextBestAction = false,
     [property: System.Text.Json.Serialization.JsonIgnore(
         Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool CriticalReview = false,
-    [property: System.Text.Json.Serialization.JsonIgnore(
-        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     bool AssetReview = false,
     [property: System.Text.Json.Serialization.JsonIgnore(
         Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -915,14 +912,23 @@ public sealed record TopicRunRequestPayload(
     string? ReplyToLineId = null,
     [property: System.Text.Json.Serialization.JsonIgnore(
         Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? ContextSelectionRevision = null);
+    string? ContextSelectionRevision = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? BackgroundTaskId = null);
 
 public sealed record TopicRunCancelPayload(
     string RunId,
     string ThreadId,
     [property: System.Text.Json.Serialization.JsonIgnore(
         Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? TriggerLineId = null);
+    string? TriggerLineId = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? BackgroundTaskId = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    long? BackgroundRevision = null);
 
 public sealed record TopicRunSubtask(
     string Id,
@@ -1039,6 +1045,8 @@ public static class TopicRunProtocol
                        || p.WidgetContext.Length > MaxWidgetContextChars)
                 || !ValidAttachments(p.Attachments, p.AttachmentIds)
                 || (p.ReplyToLineId is not null && !ValidId(p.ReplyToLineId))
+                || p.BackgroundTaskId is not null && (!ValidId(p.BackgroundTaskId)
+                    || p.ContextSelectionRevision is null || p.ContextSelectionRevision.Length != 64)
                 || (p.ThreadTitle is null) != (p.ThreadTitleVersion is null))
                 return false;
             result = p;
@@ -1088,7 +1096,9 @@ public static class TopicRunProtocol
         {
             var p = JsonSerializer.Deserialize<TopicRunCancelPayload>(body!, Json);
             if (p is null || !ValidId(p.RunId) || !ValidId(p.ThreadId)
-                || p.TriggerLineId is not null && !ValidId(p.TriggerLineId)) return false;
+                || p.TriggerLineId is not null && !ValidId(p.TriggerLineId)
+                || (p.BackgroundTaskId is null) != (p.BackgroundRevision is null)
+                || p.BackgroundTaskId is not null && (!ValidId(p.BackgroundTaskId) || p.BackgroundRevision < 0)) return false;
             result = p;
             return true;
         }

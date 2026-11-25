@@ -160,6 +160,17 @@ public enum E2EFrameKind
     ResyncSnapshot = 7,
     ReadWatermark = 8,
     Custody = 9,
+    Viewing = 10,
+}
+
+/// <summary>
+/// Optional session features. Advertised unsigned in the session handshake; older versions ignore
+/// the field, so a feature is used only when the peer advertised it.
+/// </summary>
+public static class ReplicationFeatures
+{
+    /// <summary>The device reports which topic is open so live progress goes only where it is seen.</summary>
+    public const string Viewing = "viewing.v1";
 }
 
 /// <summary>
@@ -174,6 +185,7 @@ public sealed record E2EFrame(
 /// <summary>
 /// Opens a replication session. Carries a fresh nonce, the sender's custody head hash
 /// and authoritative auth generation, all bound by a signature over the canonical init.
+/// <see cref="Features"/> and <see cref="Viewing"/> are unsigned hints outside the signature.
 /// </summary>
 public sealed record ReplicationSessionInit(
     string SessionId,
@@ -182,11 +194,14 @@ public sealed record ReplicationSessionInit(
     string Nonce,
     string CustodyHead,
     long AuthGeneration,
-    string Signature);
+    string Signature,
+    IReadOnlyList<string>? Features = null,
+    ReplicationViewing? Viewing = null);
 
 /// <summary>
 /// Acknowledges a <see cref="ReplicationSessionInit"/>, echoing the peer nonce and
 /// carrying the acker's own nonce, custody head and auth generation, all signed.
+/// <see cref="Features"/> and <see cref="Viewing"/> are unsigned hints, as on the init.
 /// </summary>
 public sealed record ReplicationSessionAck(
     string SessionId,
@@ -196,7 +211,17 @@ public sealed record ReplicationSessionAck(
     string PeerNonce,
     string CustodyHead,
     long AuthGeneration,
-    string Signature);
+    string Signature,
+    IReadOnlyList<string>? Features = null,
+    ReplicationViewing? Viewing = null);
+
+/// <summary>
+/// The topic open on the sending device while it is in the foreground (null when none). An unsigned
+/// presentation hint; the higher <see cref="Version"/> wins.
+/// </summary>
+public sealed record ReplicationViewing(
+    string? ThreadId,
+    long Version);
 
 // ---------------------------------------------------------------------------
 // 3. Replication event: the unit of the immutable log.
